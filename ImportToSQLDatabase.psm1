@@ -27,9 +27,6 @@ function Import-ToSqlDatabase {
         [switch]$SkipHeaderRow,
 
         [Parameter(Mandatory=$false)]
-        [switch]$SkipRows = 0,
-
-        [Parameter(Mandatory=$false)]
         [switch]$Truncate,
 
         [Parameter(Mandatory=$false)]
