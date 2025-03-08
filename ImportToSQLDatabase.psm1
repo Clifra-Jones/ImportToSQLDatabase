@@ -22,6 +22,12 @@ function Import-ToSqlDatabase {
 
         [Parameter(Mandatory=$false)]
         [switch]$FirstRowColumns,
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$SkipHeaderRow,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$SkipRows = 0,
 
         [Parameter(Mandatory=$false)]
         [switch]$Truncate,
@@ -41,9 +47,6 @@ function Import-ToSqlDatabase {
         [Parameter(Mandatory=$false)]
         [switch]$ShowProgress,
         
-        [Parameter(Mandatory=$false)]
-        [switch]$SkipRowCount,
-
         [Parameter(Mandatory=$false)]
         [switch]$UseTableLock,
 
@@ -93,7 +96,7 @@ function Import-ToSqlDatabase {
         if ($ShowProgress -and -not $SkipRowCount) {
             Write-Verbose "Calculating total rows in CSV file..."
             $totalRows = (Get-Content $CsvFile | Measure-Object -Line).Lines
-            if ($FirstRowColumns) { $totalRows-- }
+            if ($FirstRowColumns -or $SkipHeaderRow) { $totalRows-- }
             Write-Verbose "CSV contains $totalRows total rows to process"
         }
 
@@ -248,7 +251,16 @@ function Import-ToSqlDatabase {
         $headers.Add($currentHeader.Trim('"'))
         $sb.Clear()
         
-        Write-Log "Detected $($headers.Count) columns in CSV file."
+        # Log different messages based on whether headers are being used
+        if ($FirstRowColumns) {
+            Write-Log "Detected $($headers.Count) column headers in CSV file."
+        } else {
+            if ($SkipHeaderRow) {
+                Write-Log "CSV has $($headers.Count) columns. First row will be skipped (treated as headers)."
+            } else {
+                Write-Log "CSV has $($headers.Count) columns in first row."
+            }
+        }
 
         # Get table columns to ensure proper mapping
         $schemaCommand = New-Object System.Data.SqlClient.SqlCommand(
@@ -272,6 +284,7 @@ function Import-ToSqlDatabase {
         # Set up column mappings based on headers or ordinal position
         if ($FirstRowColumns) {
             # Match CSV headers to table columns
+            Write-Log "Using first row headers for name-based column mapping."
             for ($i = 0; $i -lt $headers.Count; $i++) {
                 $header = $headers[$i]
                 $columnName = $tableColumns[$header]
@@ -287,11 +300,12 @@ function Import-ToSqlDatabase {
             }
         } else {
             # Use ordinal position mapping
+            Write-Log "Using ordinal position for column mapping."
             $columnNames = [array]$tableColumns.Keys
             for ($i = 0; $i -lt [Math]::Min($headers.Count, $columnNames.Count); $i++) {
                 $dataTable.Columns.Add($columnNames[$i])
                 $bulkCopy.ColumnMappings.Add($i, $columnNames[$i])
-                Write-Verbose "Mapped CSV column $i to table column '$($columnNames[$i])'"
+                Write-Verbose "Mapped CSV column position $i to table column '$($columnNames[$i])'"
             }
         }
 
@@ -313,11 +327,15 @@ function Import-ToSqlDatabase {
 
         # Read and process CSV
         $reader = New-Object System.IO.StreamReader($CsvFile)
-        if ($FirstRowColumns) {
+        
+        # Determine whether to skip the first row during data import
+        if ($FirstRowColumns -or $SkipHeaderRow) {
             $reader.ReadLine() # Skip header
             $lineNumber = 1
+            Write-Log "Skipping first row during data import."
         } else {
             $lineNumber = 0
+            Write-Log "Including first row in data import."
         }
         
         # Reset counter (already initialized in Begin block)
@@ -492,6 +510,9 @@ function Import-ToSqlDatabase {
     .PARAMETER FirstRowColumns
     Indicates that the first row of the file contains column headers. If this switch is used, the function will attempt to match
     the column headers in the file to the columns in the table.
+    .PARAMETER SkipHeaderRow
+    Indicates that the first row of the file contains headers that don't match table columns. The first row will be skipped, 
+    and columns will be mapped by position rather than by name.
     .PARAMETER Truncate
     Indicates that the table should be truncated before importing data.
     .PARAMETER SqlCredential
