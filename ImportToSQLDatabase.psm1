@@ -134,7 +134,9 @@ function Import-ToSqlDatabase {
         if ($Truncate) {
             try {
                 $truncateCommand = New-Object System.Data.SqlClient.SqlCommand("TRUNCATE TABLE $Table", $connection)
-                $truncateCommand.ExecuteNonQuery()
+                [void](
+                    $truncateCommand.ExecuteNonQuery()
+                )
                 Write-Log "Table truncated successfully."
             }
             catch {
@@ -168,7 +170,9 @@ function Import-ToSqlDatabase {
                     "ALTER TABLE $Table NOCHECK CONSTRAINT ALL", 
                     $connection
                 )
-                $disableConstraintsCommand.ExecuteNonQuery()
+                [void](
+                    $disableConstraintsCommand.ExecuteNonQuery() 
+                )
                 Write-Log "Foreign key constraints disabled."
             }
             catch {
@@ -184,7 +188,9 @@ function Import-ToSqlDatabase {
                     "ALTER INDEX ALL ON $Table DISABLE",
                     $connection
                 )
-                $disableIndexesCommand.ExecuteNonQuery()
+                [void](
+                    $disableIndexesCommand.ExecuteNonQuery()
+                )
                 Write-Log "Non-clustered indexes disabled."
             }
             catch {
@@ -237,16 +243,16 @@ function Import-ToSqlDatabase {
             }
             elseif ($char -eq $Delimiter[0] -and !$inQuotes) {
                 $currentHeader = $sb.ToString()
-                $sb.Clear()
+                [void]$sb.Clear()
                 $headers.Add($currentHeader.Trim('"'))
             }
             else {
-                $sb.Append($char)
+                [void]$sb.Append($char)
             }
         }
         $currentHeader = $sb.ToString()
         $headers.Add($currentHeader.Trim('"'))
-        $sb.Clear()
+        [void]$sb.Clear()
         
         # Log different messages based on whether headers are being used
         if ($FirstRowColumns) {
@@ -287,12 +293,20 @@ function Import-ToSqlDatabase {
                 $columnName = $tableColumns[$header]
                 
                 if ($columnName) {
-                    $dataTable.Columns.Add($columnName)
-                    $bulkCopy.ColumnMappings.Add($i, $columnName)
+                    [void] (
+                        $dataTable.Columns.Add($columnName)
+                    )
+                    [void](
+                        $bulkCopy.ColumnMappings.Add($i, $columnName)
+                    )
+                    
+
                     Write-Verbose "Mapped column '$header' to table column '$columnName'"
                 } else {
                     Write-Warning "Could not find matching table column for CSV column '$header'"
-                    $dataTable.Columns.Add("Column$i")
+                    [void](
+                        $dataTable.Columns.Add("Column$i")
+                    )
                 }
             }
         } else {
@@ -300,8 +314,13 @@ function Import-ToSqlDatabase {
             Write-Log "Using ordinal position for column mapping."
             $columnNames = [array]$tableColumns.Keys
             for ($i = 0; $i -lt [Math]::Min($headers.Count, $columnNames.Count); $i++) {
-                $dataTable.Columns.Add($columnNames[$i])
-                $bulkCopy.ColumnMappings.Add($i, $columnNames[$i])
+                [void](
+                    $dataTable.Columns.Add($columnNames[$i])
+                )
+                [void](
+                    $bulkCopy.ColumnMappings.Add($i, $columnNames[$i])
+                )
+
                 Write-Verbose "Mapped CSV column position $i to table column '$($columnNames[$i])'"
             }
         }
@@ -327,7 +346,9 @@ function Import-ToSqlDatabase {
         
         # Determine whether to skip the first row during data import
         if ($FirstRowColumns -or $SkipHeaderRow) {
-            $reader.ReadLine() # Skip header
+            [void](
+                $reader.ReadLine() # Skip header
+            )
             $lineNumber = 1
             Write-Log "Skipping first row during data import."
         } else {
@@ -348,20 +369,21 @@ function Import-ToSqlDatabase {
                 $inQuotes = $false
                 
                 # Use StringBuilder for field parsing
-                $sb.Clear()
+                [void]$sb.Clear()
                 foreach ($char in $line.ToCharArray()) {
                     if ($char -eq '"') {
                         $inQuotes = !$inQuotes
                     }
                     elseif ($char -eq $Delimiter[0] -and !$inQuotes) {
                         $fields += $sb.ToString().Trim('"')
-                        $sb.Clear()
+                        [void]$sb.Clear()
                     }
                     else {
-                        $sb.Append($char)
+                        [void]$sb.Append($char)
                     }
                 }
                 $fields += $sb.ToString().Trim('"')
+                [void]$sb.Clear()
                 
                 $row = $dataTable.NewRow()
                 for ($i = 0; $i -lt [Math]::Min($fields.Count, $dataTable.Columns.Count); $i++) {
@@ -371,11 +393,13 @@ function Import-ToSqlDatabase {
                         $row[$i] = $fields[$i]
                     }
                 }
-                $dataTable.Rows.Add($row)
+                [void](
+                    $dataTable.Rows.Add($row)
+                )
                 $rowsProcessed++
                 
                 # Periodic logging and progress update
-                if (($rowsProcessed - $lastProgressReport) -gt 5000) {
+                if (($rowsProcessed - $lastProgressReport) -gt $BatchSize) {
                     $elapsedTime = (Get-Date) - $startTime
                     $rowsPerSecond = if ($elapsedTime.TotalSeconds -gt 0) { 
                         [math]::Round($rowsProcessed / $elapsedTime.TotalSeconds, 1) 
@@ -404,8 +428,12 @@ function Import-ToSqlDatabase {
                 # Batch process
                 if ($dataTable.Rows.Count -ge $BatchSize) {
                     try {
-                        $bulkCopy.WriteToServer($dataTable)
-                        $dataTable.Clear()
+                        [void](
+                            $bulkCopy.WriteToServer($dataTable)
+                        )
+                        [void](
+                            $dataTable.Clear()
+                        )
                     }
                     catch {
                         Write-Log "Error during bulk copy: $_"
@@ -422,7 +450,9 @@ function Import-ToSqlDatabase {
         # Write remaining rows
         if ($dataTable.Rows.Count -gt 0) {
             try {
+                [void](
                 $bulkCopy.WriteToServer($dataTable)
+                )
             }
             catch {
                 Write-Log "Error during final bulk copy: $_"
@@ -453,7 +483,9 @@ function Import-ToSqlDatabase {
                     "ALTER INDEX ALL ON $Table REBUILD",
                     $connection
                 )
-                $enableIndexesCommand.ExecuteNonQuery()
+                [void](
+                    $enableIndexesCommand.ExecuteNonQuery()
+                )
                 Write-Log "Non-clustered indexes re-enabled."
             }
             catch {
@@ -469,7 +501,9 @@ function Import-ToSqlDatabase {
                     "ALTER TABLE $Table CHECK CONSTRAINT ALL",
                     $connection
                 )
-                $enableConstraintsCommand.ExecuteNonQuery()
+                [void](
+                    $enableConstraintsCommand.ExecuteNonQuery()
+                )
                 Write-Log "Foreign key constraints re-enabled."
             }
             catch {
