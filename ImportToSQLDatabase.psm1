@@ -372,7 +372,7 @@ function Import-ToSqlDatabase {
                 $inQuotes = $false
                 
                 # Use StringBuilder for field parsing
-                Write-Verbose "Starting field parsing for line $lineNumber..."
+                Write-Log "Starting field parsing for line $lineNumber..."
                 [void]$sb.Clear()
                 foreach ($char in $line.ToCharArray()) {
                     if ($char -eq '"') {
@@ -389,7 +389,7 @@ function Import-ToSqlDatabase {
                 $fields += $sb.ToString().Trim('"')
                 [void]$sb.Clear()
                 
-                Write-Verbose "Adding data to datarow..."
+                Write-Log "Adding data to datarow..."
                 $row = $dataTable.NewRow()
                 for ($i = 0; $i -lt [Math]::Min($fields.Count, $dataTable.Columns.Count); $i++) {
                     if ($fields[$i] -eq '') {
@@ -431,7 +431,7 @@ function Import-ToSqlDatabase {
                 }
                 
                 # Batch process
-                Write-Verbose "Writing DataTable to SQL Server..."
+                Write-Log "Writing DataTable to SQL Server..."
                 if ($dataTable.Rows.Count -ge $BatchSize) {
                     try {
                         [void](
