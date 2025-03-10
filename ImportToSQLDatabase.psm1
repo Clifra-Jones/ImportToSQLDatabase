@@ -68,7 +68,7 @@ function Import-ToSqlDatabase {
 
     Begin {
         # Normalize the path to the CSV file 
-        $CsvFile = [System.IO.Path]::GetFullPath($CsvFile)
+        $CsvFile = (Resolve-Path $CsvFile).Path
         
         # If parameter HighPerformanceMode is specified, set the batch size to 10000 and the timeout to 1200
         # and enable ManagedIndexes, ManageConstraints, and UseTableLock
