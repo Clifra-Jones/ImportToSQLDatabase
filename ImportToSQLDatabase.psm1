@@ -204,6 +204,8 @@ function Import-ToSqlDatabase {
 
     }
 
+    # Corrected Process block for the Import-ToSqlDatabase function
+
     Process {
         # Build BulkCopyOptions based on switches
         $bulkCopyOptions = [System.Data.SqlClient.SqlBulkCopyOptions]::Default
@@ -430,9 +432,9 @@ function Import-ToSqlDatabase {
                     }
                 }
                 
-                # Batch process
-                Write-Log "Writing DataTable to SQL Server..."
+                # Batch process - only perform the bulk copy when we've reached the batch size
                 if ($dataTable.Rows.Count -ge $BatchSize) {
+                    Write-Log "Writing DataTable to SQL Server (batch of $($dataTable.Rows.Count) rows)..."
                     try {
                         [void](
                             $bulkCopy.WriteToServer($dataTable)
@@ -455,6 +457,7 @@ function Import-ToSqlDatabase {
 
         # Write remaining rows
         if ($dataTable.Rows.Count -gt 0) {
+            Write-Log "Writing remaining $($dataTable.Rows.Count) rows to SQL Server..."
             try {
                 [void](
                 $bulkCopy.WriteToServer($dataTable)
@@ -466,7 +469,6 @@ function Import-ToSqlDatabase {
             }
         }
     }
-
     end {
         # Final cleanup
         $sb = $null
