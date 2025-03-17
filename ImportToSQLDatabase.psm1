@@ -700,6 +700,29 @@ function Find-ProblemData {
     $connection.Close()
     
     return $problemRows
+    <#
+    .SYNOPSIS
+    Finds rows in a CSV file that contain data that exceeds the maximum length allowed in the corresponding SQL table columns.
+    .DESCRIPTION
+    The Find-ProblemData function reads a CSV file and compares the length of each field to the maximum length allowed in the corresponding
+    SQL table columns. If a field exceeds the maximum length, the row number, column name, actual data length, maximum allowed length, and
+    a sample of the data are recorded. The function returns a list of objects representing the problem rows.
+    .PARAMETER CsvFile
+    The path to the CSV file to analyze.
+    .PARAMETER SqlServer
+    The name of the SQL Server instance to connect to.
+    .PARAMETER Database
+    The name of the database containing the table to compare against.
+    .PARAMETER Table
+    The name of the table to compare against.
+    .PARAMETER Delimiter
+    The delimiter used in the CSV file. The default is a comma (,).
+    .PARAMETER SqlCredential
+    A PSCredential object containing the username and password to use when connecting to SQL Server. If not provided, Windows authentication will be used.
+    .EXAMPLE
+    Find-ProblemData -CsvFile 'C:\data\employees.csv' -SqlServer 'localhost' -Database 'HR' -Table 'Employees'
+    Analyzes the 'employees.csv' file and compares the data lengths to the maximum allowed lengths in the 'Employees' table in the 'HR' database.    
+    #>
 }
 
 function Import-BulkInsert {
@@ -963,4 +986,53 @@ function Import-BulkInsert {
         $connection.Close()
         Write-Host "Database connection closed."
     }
+    <#
+    .SYNOPSIS
+    Imports data from a delimited file into a SQL Server table using BULK INSERT.
+    .DESCRIPTION
+    The Import-BulkInsert function imports data from a delimited file into a SQL Server table using the BULK INSERT command.
+    The function supports importing CSV, pipe-delimited, and tab-delimited files. The function can handle quoted fields and
+    supports options for skipping header rows, truncating the table before import, and handling trailing delimiters.
+    .PARAMETER CsvFile
+    The path to the delimited file to import.
+    .PARAMETER SqlServer
+    The name of the SQL Server instance to connect to.
+    .PARAMETER Database
+    The name of the database to import data into.
+    .PARAMETER Table
+    The name of the table to import data into.
+    .PARAMETER Delimiter
+    The delimiter used in the delimited file. The default is a pipe (|).
+    .PARAMETER SkipHeaderRow
+    Indicates that the first row of the file contains headers and should be skipped during import.
+    .PARAMETER Truncate
+    Indicates that the table should be truncated before importing data.
+    .PARAMETER SqlCredential
+    A PSCredential object containing the username and password to use when connecting to SQL Server. If not provided,
+    Windows authentication will be used.
+    .PARAMETER SharedPath
+    A shared path accessible to both PowerShell and SQL Server where temporary files will be stored. If not provided, the
+    directory of the input file will be used.
+    .PARAMETER HandleTrailingDelimiters
+    Indicates that the function should handle cases where the input file has trailing delimiters that don't match the number
+    of columns in the table. The function will add or remove delimiters as needed to match the column count.
+    .EXAMPLE
+    Import-BulkInsert -CsvFile 'C:\data\employees.csv' -SqlServer 'localhost' -Database 'HR' -Table 'Employees'
+    Imports data from the 'employees.csv' file into the 'Employees' table in the 'HR' database on the 'localhost' SQL Server instance.
+    .EXAMPLE
+    Import-BulkInsert -CsvFile 'C:\data\employees.csv' -SqlServer 'localhost' -Database 'HR' -Table 'Employees' -SkipHeaderRow
+    Imports data from the 'employees.csv' file into the 'Employees' table in the 'HR' database, skipping the header row in the file.
+    .EXAMPLE
+    Import-BulkInsert -CsvFile 'C:\data\employees.csv' -SqlServer 'localhost' -Database 'HR' -Table 'Employees' -Truncate
+    Imports data from the 'employees.csv' file into the 'Employees' table in the 'HR' database, truncating the table before import.
+    .EXAMPLE
+    Import-BulkInsert -CsvFile 'C:\data\employees.csv' -SqlServer 'localhost' -Database 'HR' -Table 'Employees' -HandleTrailingDelimiters
+    Imports data from the 'employees.csv' file into the 'Employees' table in the 'HR' database, handling trailing delimiters in the file.
+    .NOTES
+    This function is significantly faster than the Import-ToSqlDatabase function, but it has fewer options and may not handle all edge cases.
+    If the SQL server is on a different machine, the shared path must be accessible to both the local machine and the SQL server.
+    The SQL Server Service needs to be running under an account that has access to the shared path and the account 
+    needs "Trust this user for delegation to any service (Kerberos only)" enabled.
+    If you are importing to a hosted SQL Server service you will need to use the Import-ToSqlDatabase function.
+    #>
 }
