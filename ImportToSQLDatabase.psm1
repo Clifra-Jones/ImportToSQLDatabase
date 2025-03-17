@@ -859,6 +859,7 @@ function Import-BulkInsert {
     $formatFile = [System.IO.Path]::Combine($SharedPath, $formatFileName)
     
     # Create XML format file for better handling of edge cases
+    # Using MAX_LENGTH="8000" instead of "0" to fix the error
     $formatContent = @"
 <?xml version="1.0"?>
 <BCPFORMAT xmlns="http://schemas.microsoft.com/sqlserver/2004/bulkload/format" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
@@ -869,8 +870,10 @@ function Import-BulkInsert {
     for ($i = 0; $i -lt $columnCount; $i++) {
         # Last field needs special handling for trailing delimiter issues
         $terminator = if ($i -eq $columnCount - 1) { "\r\n" } else { $Delimiter }
+        
+        # Use 8000 as MAX_LENGTH instead of 0
         $formatContent += @"
-  <FIELD ID="$($i+1)" xsi:type="CharTerm" TERMINATOR="$terminator" MAX_LENGTH="0"/>
+  <FIELD ID="$($i+1)" xsi:type="CharTerm" TERMINATOR="$terminator" MAX_LENGTH="8000"/>
 "@
     }
 
@@ -881,8 +884,33 @@ function Import-BulkInsert {
 
     # Add column mappings
     for ($i = 0; $i -lt $columnCount; $i++) {
+        $columnName = $columnsTable.Rows[$i]["COLUMN_NAME"]
+        $dataType = $columnsTable.Rows[$i]["DATA_TYPE"].ToString().ToUpper()
+        
+        # Map SQL data types to appropriate BCP format types
+        $xsiType = switch ($dataType) {
+            "INT" { "SQLINT" }
+            "BIGINT" { "SQLBIGINT" }
+            "SMALLINT" { "SQLSMALLINT" }
+            "TINYINT" { "SQLTINYINT" }
+            "BIT" { "SQLBIT" }
+            "DECIMAL" { "SQLDECIMAL" }
+            "NUMERIC" { "SQLNUMERIC" }
+            "MONEY" { "SQLMONEY" }
+            "SMALLMONEY" { "SQLSMALLMONEY" }
+            "FLOAT" { "SQLFLT8" }
+            "REAL" { "SQLFLT4" }
+            "DATETIME" { "SQLDATETIME" }
+            "DATETIME2" { "SQLDATETIME" }
+            "DATE" { "SQLDATE" }
+            "TIME" { "SQLTIME" }
+            "DATETIMEOFFSET" { "SQLDATETIMEOFFSET" }
+            "SMALLDATETIME" { "SQLSMALLDDATETIME" }
+            default { "SQLVARYCHAR" }  # Default to VARCHAR for text and other types
+        }
+        
         $formatContent += @"
-  <COLUMN SOURCE="$($i+1)" NAME="$($columnsTable.Rows[$i]["COLUMN_NAME"])" xsi:type="SQLVARYCHAR"/>
+  <COLUMN SOURCE="$($i+1)" NAME="$columnName" xsi:type="$xsiType"/>
 "@
     }
 
