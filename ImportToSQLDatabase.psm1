@@ -2,27 +2,6 @@ using namespace System.Collections.Generic
 # Modern-CsvSqlImport.psm1
 # A PowerShell module for importing CSV data into SQL Server tables
 
-# Add this function to properly format file paths for T-SQL
-function Format-PathForTSQL {
-    param(
-        [string]$Path
-    )
-    
-    # Check if it's a UNC path
-    if ($Path -match '^\\\\') {
-        # For UNC paths, just double the backslashes
-        return $Path.Replace('\', '\\')
-    }
-    elseif ($Path -match '^/') {
-        # For Linux/Unix paths, return as is
-        return $Path
-    }
-    else {
-        # For Windows local paths, double the backslashes
-        return $Path.Replace('\', '\\')
-    }
-}
-
 function Import-ToSqlDatabase {
     [CmdletBinding()]
     param(
@@ -822,8 +801,6 @@ function Import-BulkInsert {
     
     Write-Host "Using format file: $formatFile"
     Write-Host "Using data file: $tempCsvFile"
-    $tempCsvFile = Format-PathForTSQL -Path $tempCsvFile
-    $formatFile = Format-PathForTSQL -Path $formatFile
 
     # Execute BULK INSERT
     $bulkInsertSql = @"
