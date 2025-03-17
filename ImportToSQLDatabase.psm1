@@ -585,3 +585,257 @@ function Import-ToSqlDatabase {
     Imports data from the 'employees.csv' file into the 'Employees' table in the 'HR' database on the 'localhost' SQL Server instance. 
     #>
 }
+
+# Add this diagnostic code to your module
+function Find-ProblemData {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$CsvFile,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$SqlServer,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$Database,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$Table,
+        
+        [Parameter(Mandatory=$false)]
+        [string]$Delimiter = ",",
+        
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$SqlCredential
+    )
+    
+    # Build connection string and connect
+    if ($SqlCredential) {
+        $username = $SqlCredential.UserName
+        $password = $SqlCredential.GetNetworkCredential().Password
+        $connectionString = "Server=$SqlServer;Database=$Database;User Id=$username;Password=$password;"
+    } else {
+        $connectionString = "Server=$SqlServer;Database=$Database;Integrated Security=True;"
+    }
+    
+    $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
+    $connection.Open()
+    
+    # Get column info
+    $columnInfo = @{}
+    $columnsInfoCmd = New-Object System.Data.SqlClient.SqlCommand(
+        "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '$Table' ORDER BY ORDINAL_POSITION",
+        $connection
+    )
+    $columnsReader = $columnsInfoCmd.ExecuteReader()
+    $orderedColumns = @()
+    while ($columnsReader.Read()) {
+        $columnName = $columnsReader["COLUMN_NAME"]
+        $dataType = $columnsReader["DATA_TYPE"]
+        $maxLength = if ($columnsReader["CHARACTER_MAXIMUM_LENGTH"] -is [DBNull]) { [int]::MaxValue } else { $columnsReader["CHARACTER_MAXIMUM_LENGTH"] }
+        
+        $columnInfo[$columnName] = @{
+            DataType = $dataType
+            MaxLength = $maxLength
+        }
+        $orderedColumns += $columnName
+    }
+    $columnsReader.Close()
+    
+    # Process CSV
+    $reader = New-Object System.IO.StreamReader($CsvFile)
+    [void]($reader.ReadLine()) # Skip header
+    
+    $problemRows = @()
+    $rowNum = 1
+    
+    while ($null -ne ($line = $reader.ReadLine())) {
+        $rowNum++
+        $fields = @()
+        $inQuotes = $false
+        $sb = [System.Text.StringBuilder]::new()
+        
+        foreach ($char in $line.ToCharArray()) {
+            if ($char -eq '"') {
+                $inQuotes = !$inQuotes
+            }
+            elseif ($char -eq $Delimiter[0] -and !$inQuotes) {
+                $fields += $sb.ToString().Trim('"')
+                [void]$sb.Clear()
+            }
+            else {
+                [void]$sb.Append($char)
+            }
+        }
+        $fields += $sb.ToString().Trim('"')
+        
+        # Check for length problems
+        for ($i = 0; $i -lt [Math]::Min($fields.Count, $orderedColumns.Count); $i++) {
+            if ($fields[$i] -ne '') {
+                $columnName = $orderedColumns[$i]
+                $colInfo = $columnInfo[$columnName]
+                
+                if ($colInfo.DataType -in @('varchar', 'nvarchar', 'char', 'nchar') -and 
+                    $fields[$i].Length -gt $colInfo.MaxLength) {
+                    $problemRows += [PSCustomObject]@{
+                        RowNumber = $rowNum
+                        Column = $columnName
+                        DataLength = $fields[$i].Length
+                        MaxAllowed = $colInfo.MaxLength
+                        Data = if ($fields[$i].Length > 50) { "$($fields[$i].Substring(0, 47))..." } else { $fields[$i] }
+                    }
+                }
+            }
+        }
+        
+        # Provide progress output every 1000 rows
+        if ($rowNum % 1000 -eq 0) {
+            Write-Host "Processed $rowNum rows..."
+        }
+    }
+    
+    $reader.Close()
+    $connection.Close()
+    
+    return $problemRows
+}
+
+function Import-BulkInsert {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$CsvFile,
+        [Parameter(Mandatory=$true)]
+        [string]$SqlServer,
+        [Parameter(Mandatory=$true)]
+        [string]$Database,
+        [Parameter(Mandatory=$true)]
+        [string]$Table,
+        [Parameter(Mandatory=$false)]
+        [string]$Delimiter = "|",
+        [Parameter(Mandatory=$false)]
+        [switch]$SkipHeaderRow,
+        [Parameter(Mandatory=$false)]
+        [switch]$Truncate,
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential]$SqlCredential
+    )
+    
+    # Build connection string
+    if ($SqlCredential) {
+        $username = $SqlCredential.UserName
+        $password = $SqlCredential.GetNetworkCredential().Password
+        $connectionString = "Server=$SqlServer;Database=$Database;User Id=$username;Password=$password;"
+    } else {
+        $connectionString = "Server=$SqlServer;Database=$Database;Integrated Security=True;"
+    }
+    
+    $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
+    $connection.Open()
+    
+    # Truncate if requested
+    if ($Truncate) {
+        $truncateCmd = New-Object System.Data.SqlClient.SqlCommand("TRUNCATE TABLE $Table", $connection)
+        $truncateCmd.ExecuteNonQuery() | Out-Null
+    }
+    
+    # Create a format file
+    $formatFile = [System.IO.Path]::GetTempFileName()
+    
+    # Get column info
+    $columnsCmd = New-Object System.Data.SqlClient.SqlCommand(
+        "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '$Table' ORDER BY ORDINAL_POSITION", 
+        $connection
+    )
+    $columnsAdapter = New-Object System.Data.SqlClient.SqlDataAdapter($columnsCmd)
+    $columnsTable = New-Object System.Data.DataTable
+    $columnsAdapter.Fill($columnsTable) | Out-Null
+    
+    # Create the format file content
+    $formatContent = "<?xml version=`"1.0`"?>`r`n<BCPFORMAT xmlns=`"http://schemas.microsoft.com/sqlserver/2004/bulkload/format`" xmlns:xsi=`"http://www.w3.org/2001/XMLSchema-instance`">`r`n"
+    $formatContent += "  <RECORD>`r`n"
+    $formatContent += "    <FIELD ID=`"1`" xsi:type=`"CharTerm`" TERMINATOR=`"$Delimiter`" MAX_LENGTH=`"1000000`"/>`r`n"
+    
+    for ($i = 1; $i -lt $columnsTable.Rows.Count; $i++) {
+        $formatContent += "    <FIELD ID=`"$($i+1)`" xsi:type=`"CharTerm`" TERMINATOR=`"$Delimiter`" MAX_LENGTH=`"1000000`"/>`r`n"
+    }
+    
+    $formatContent += "  </RECORD>`r`n"
+    $formatContent += "  <ROW>`r`n"
+    
+    for ($i = 0; $i -lt $columnsTable.Rows.Count; $i++) {
+        $column = $columnsTable.Rows[$i]
+        $dataType = $column["DATA_TYPE"].ToLower()
+        
+        # Map SQL types to BCP types
+        $bcpType = if ($dataType -like "*char*") { "SQLCHAR" } 
+                    elseif ($dataType -like "*date*") { "SQLDATE" }
+                    elseif ($dataType -in @("int", "bigint", "smallint", "tinyint")) { "SQLINT" }
+                    elseif ($dataType -in @("decimal", "numeric", "money")) { "SQLDECIMAL" }
+                    elseif ($dataType -in @("float", "real")) { "SQLFLT8" }
+                    else { "SQLCHAR" }
+        
+        $formatContent += "    <COLUMN SOURCE=`"$($i+1)`" NAME=`"$($column["COLUMN_NAME"])`" xsi:type=`"$bcpType`"/>`r`n"
+    }
+    
+    $formatContent += "  </ROW>`r`n"
+    $formatContent += "</BCPFORMAT>"
+    
+    # Write format file
+    [System.IO.File]::WriteAllText($formatFile, $formatContent)
+    
+    # Create a temporary copy of the CSV with first row removed if needed
+    $tempCsvFile = $CsvFile
+    if ($SkipHeaderRow) {
+        $tempCsvFile = [System.IO.Path]::GetTempFileName()
+        $reader = [System.IO.File]::OpenText($CsvFile)
+        $writer = [System.IO.File]::CreateText($tempCsvFile)
+        
+        # Skip header
+        [void]$reader.ReadLine()
+        
+        # Copy remaining content
+        while ($null -ne ($line = $reader.ReadLine())) {
+            $writer.WriteLine($line)
+        }
+        
+        $reader.Close()
+        $writer.Close()
+    }
+    
+    # Execute BULK INSERT
+    $bulkInsertSql = @"
+    BULK INSERT $Table
+    FROM '$([System.IO.Path]::GetFullPath($tempCsvFile).Replace('\', '\\'))'
+    WITH (
+        FORMATFILE = '$([System.IO.Path]::GetFullPath($formatFile).Replace('\', '\\'))',
+        FIRSTROW = 1,
+        FIELDTERMINATOR = '$Delimiter',
+        ROWTERMINATOR = '\n',
+        TABLOCK,
+        MAXERRORS = 10,
+        ERRORFILE = '$([System.IO.Path]::GetTempPath().Replace('\', '\\'))bulkerrors.txt'
+    )
+"@
+    
+    $bulkCmd = New-Object System.Data.SqlClient.SqlCommand($bulkInsertSql, $connection)
+    
+    try {
+        $bulkCmd.ExecuteNonQuery() | Out-Null
+        Write-Host "BULK INSERT completed successfully."
+    }
+    catch {
+        Write-Host "Error during BULK INSERT: $($_.Exception.Message)"
+    }
+    finally {
+        # Clean up temp files
+        if ($SkipHeaderRow -and (Test-Path $tempCsvFile)) {
+            Remove-Item $tempCsvFile -Force
+        }
+        if (Test-Path $formatFile) {
+            Remove-Item $formatFile -Force
+        }
+        
+        $connection.Close()
+    }
+}
