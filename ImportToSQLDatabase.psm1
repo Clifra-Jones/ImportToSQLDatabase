@@ -722,7 +722,9 @@ function Import-BulkInsert {
         [Parameter(Mandatory=$false)]
         [System.Management.Automation.PSCredential]$SqlCredential,
         [Parameter(Mandatory=$false)]
-        [string]$SharedPath  # Path accessible to both PowerShell and SQL Server
+        [string]$SharedPath,  # Path accessible to both PowerShell and SQL Server
+        [Parameter(Mandatory=$false)]
+        [switch]$HandleTrailingDelimiters
     )
     
     # Determine a shared path location
@@ -748,60 +750,151 @@ function Import-BulkInsert {
     if ($Truncate) {
         $truncateCmd = New-Object System.Data.SqlClient.SqlCommand("TRUNCATE TABLE $Table", $connection)
         $truncateCmd.ExecuteNonQuery() | Out-Null
+        Write-Host "Table truncated."
     }
-    
-    # Create format file in shared location
-    $formatFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".fmt"
-    $formatFile = [System.IO.Path]::Combine($SharedPath, $formatFileName)
     
     # Get column info
     $columnsCmd = New-Object System.Data.SqlClient.SqlCommand(
-        "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '$Table' ORDER BY ORDINAL_POSITION", 
+        "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '$Table' ORDER BY ORDINAL_POSITION", 
         $connection
     )
     $columnsAdapter = New-Object System.Data.SqlClient.SqlDataAdapter($columnsCmd)
     $columnsTable = New-Object System.Data.DataTable
     $columnsAdapter.Fill($columnsTable) | Out-Null
+    $columnCount = $columnsTable.Rows.Count
     
-    # Create simple non-XML format file (more compatible)
-    $formatContent = "9.0`r`n"  # Version
-    $formatContent += "$($columnsTable.Rows.Count)`r`n"  # Number of columns
+    Write-Host "Found $columnCount columns in table $Table."
     
-    for ($i = 0; $i -lt $columnsTable.Rows.Count; $i++) {
-        $column = $columnsTable.Rows[$i]
-        $dataType = $column["DATA_TYPE"].ToLower()
-        
-        # Field number, data type, prefix length, field length, terminator
-        $formatContent += "$($i+1) SQLCHAR 0 0 ""$Delimiter"" $($i+1) $($column["COLUMN_NAME"]) """"`r`n"
-    }
-    
-    # Write format file
-    [System.IO.File]::WriteAllText($formatFile, $formatContent)
-    
-    # Create a temporary copy of the CSV with first row removed if needed
+    # Create a temporary copy of the CSV with normalized delimiters if needed
     $tempCsvFile = $CsvFile
-    if ($SkipHeaderRow) {
+    if ($SkipHeaderRow -or $HandleTrailingDelimiters) {
         $tempFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".csv"
         $tempCsvFile = [System.IO.Path]::Combine($SharedPath, $tempFileName)
         
         $reader = [System.IO.File]::OpenText($CsvFile)
         $writer = [System.IO.File]::CreateText($tempCsvFile)
         
-        # Skip header
-        [void]$reader.ReadLine()
+        # Skip header if needed
+        if ($SkipHeaderRow) {
+            [void]$reader.ReadLine()
+            Write-Host "Skipping header row."
+        }
         
-        # Copy remaining content
+        # Process and write remaining content
+        $lineNum = 0
         while ($null -ne ($line = $reader.ReadLine())) {
+            $lineNum++
+            
+            if ($HandleTrailingDelimiters) {
+                # Count delimiters in the line
+                $delimiterCount = ($line.ToCharArray() | Where-Object { $_ -eq $Delimiter[0] }).Count
+                
+                # Ensure we have the right number of delimiters (should be columnCount - 1)
+                # If too few delimiters, add them; if too many, remove them
+                if ($delimiterCount -lt ($columnCount - 1)) {
+                    # Add missing delimiters
+                    $line = $line + ($Delimiter * (($columnCount - 1) - $delimiterCount))
+                    Write-Verbose "Added delimiters to line $lineNum"
+                }
+                elseif ($delimiterCount -gt ($columnCount - 1)) {
+                    # Remove excess delimiters by parsing and taking only the columns we need
+                    $fields = @()
+                    $inQuotes = $false
+                    $sb = [System.Text.StringBuilder]::new()
+                    
+                    foreach ($char in $line.ToCharArray()) {
+                        if ($char -eq '"') {
+                            $inQuotes = !$inQuotes
+                            [void]$sb.Append($char)
+                        }
+                        elseif ($char -eq $Delimiter[0] -and !$inQuotes) {
+                            $fields += $sb.ToString()
+                            [void]$sb.Clear()
+                            
+                            # If we already have enough fields, stop processing
+                            if ($fields.Count -ge $columnCount) {
+                                break
+                            }
+                        }
+                        else {
+                            [void]$sb.Append($char)
+                        }
+                    }
+                    
+                    # Add the last field if needed
+                    if ($fields.Count -lt $columnCount) {
+                        $fields += $sb.ToString()
+                    }
+                    
+                    # Rebuild the line with the correct number of delimiters
+                    $line = $fields[0]
+                    for ($i = 1; $i -lt $columnCount; $i++) {
+                        if ($i -lt $fields.Count) {
+                            $line += "$Delimiter$($fields[$i])"
+                        }
+                        else {
+                            $line += "$Delimiter"
+                        }
+                    }
+                    
+                    Write-Verbose "Fixed excess delimiters in line $lineNum"
+                }
+            }
+            
             $writer.WriteLine($line)
+            
+            # Show progress every 10,000 lines
+            if ($lineNum % 10000 -eq 0) {
+                Write-Host "Processed $lineNum lines..."
+            }
         }
         
         $reader.Close()
         $writer.Close()
+        Write-Host "Created preprocessed file with $lineNum lines: $tempCsvFile"
     }
     
-    Write-Host "Using format file: $formatFile"
-    Write-Host "Using data file: $tempCsvFile"
+    # Create format file
+    $formatFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".fmt"
+    $formatFile = [System.IO.Path]::Combine($SharedPath, $formatFileName)
+    
+    # Create XML format file for better handling of edge cases
+    $formatContent = @"
+<?xml version="1.0"?>
+<BCPFORMAT xmlns="http://schemas.microsoft.com/sqlserver/2004/bulkload/format" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+ <RECORD>
+"@
 
+    # Add field definitions
+    for ($i = 0; $i -lt $columnCount; $i++) {
+        # Last field needs special handling for trailing delimiter issues
+        $terminator = if ($i -eq $columnCount - 1) { "\r\n" } else { $Delimiter }
+        $formatContent += @"
+  <FIELD ID="$($i+1)" xsi:type="CharTerm" TERMINATOR="$terminator" MAX_LENGTH="0"/>
+"@
+    }
+
+    $formatContent += @"
+ </RECORD>
+ <ROW>
+"@
+
+    # Add column mappings
+    for ($i = 0; $i -lt $columnCount; $i++) {
+        $formatContent += @"
+  <COLUMN SOURCE="$($i+1)" NAME="$($columnsTable.Rows[$i]["COLUMN_NAME"])" xsi:type="SQLVARYCHAR"/>
+"@
+    }
+
+    $formatContent += @"
+ </ROW>
+</BCPFORMAT>
+"@
+
+    # Write format file
+    [System.IO.File]::WriteAllText($formatFile, $formatContent)
+    Write-Host "Created format file: $formatFile"
+    
     # Execute BULK INSERT
     $bulkInsertSql = @"
     BULK INSERT $Table
@@ -809,34 +902,37 @@ function Import-BulkInsert {
     WITH (
         FORMATFILE = '$formatFile',
         FIRSTROW = 1,
-        ROWTERMINATOR = '\r\n',
         TABLOCK,
         MAXERRORS = 0
     )
 "@
     
-    Write-Host "SQL Command: $bulkInsertSql"
+    Write-Host "Executing SQL Command: $bulkInsertSql"
     $bulkCmd = New-Object System.Data.SqlClient.SqlCommand($bulkInsertSql, $connection)
+    $bulkCmd.CommandTimeout = 600  # 10 minute timeout
     
     try {
         $bulkCmd.ExecuteNonQuery() | Out-Null
         Write-Host "BULK INSERT completed successfully."
     }
     catch {
-        Write-Host "Error during BULK INSERT: $($_.Exception.Message)"
+        Write-Host "Error during BULK INSERT: $($_.Exception.Message)" -ForegroundColor Red
         if ($_.Exception.InnerException) {
-            Write-Host "Inner exception: $($_.Exception.InnerException.Message)"
+            Write-Host "Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
         }
     }
     finally {
         # Clean up temp files
-        if ($SkipHeaderRow -and (Test-Path $tempCsvFile) -and $tempCsvFile -ne $CsvFile) {
+        if ((Test-Path $tempCsvFile) -and $tempCsvFile -ne $CsvFile) {
             Remove-Item $tempCsvFile -Force
+            Write-Host "Removed temporary CSV file."
         }
         if (Test-Path $formatFile) {
             Remove-Item $formatFile -Force
+            Write-Host "Removed format file."
         }
         
         $connection.Close()
+        Write-Host "Database connection closed."
     }
 }
