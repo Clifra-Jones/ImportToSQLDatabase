@@ -809,7 +809,7 @@ function Import-BulkInsert {
     WITH (
         FORMATFILE = '$formatFile',
         FIRSTROW = 1,
-        ROWTERMINATOR = '\n',
+        ROWTERMINATOR = '\r\n',
         TABLOCK,
         MAXERRORS = 0
     )
