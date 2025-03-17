@@ -720,8 +720,17 @@ function Import-BulkInsert {
         [Parameter(Mandatory=$false)]
         [switch]$Truncate,
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$SqlCredential
+        [System.Management.Automation.PSCredential]$SqlCredential,
+        [Parameter(Mandatory=$false)]
+        [string]$SharedPath  # Path accessible to both PowerShell and SQL Server
     )
+    
+    # Determine a shared path location
+    if (-not $SharedPath) {
+        # Try to use the same directory as the input file
+        $SharedPath = [System.IO.Path]::GetDirectoryName($CsvFile)
+        Write-Host "Using shared path: $SharedPath"
+    }
     
     # Build connection string
     if ($SqlCredential) {
@@ -741,8 +750,9 @@ function Import-BulkInsert {
         $truncateCmd.ExecuteNonQuery() | Out-Null
     }
     
-    # Create a format file
-    $formatFile = [System.IO.Path]::GetTempFileName()
+    # Create format file in shared location
+    $formatFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".fmt"
+    $formatFile = [System.IO.Path]::Combine($SharedPath, $formatFileName)
     
     # Get column info
     $columnsCmd = New-Object System.Data.SqlClient.SqlCommand(
@@ -753,35 +763,17 @@ function Import-BulkInsert {
     $columnsTable = New-Object System.Data.DataTable
     $columnsAdapter.Fill($columnsTable) | Out-Null
     
-    # Create the format file content
-    $formatContent = "<?xml version=`"1.0`"?>`r`n<BCPFORMAT xmlns=`"http://schemas.microsoft.com/sqlserver/2004/bulkload/format`" xmlns:xsi=`"http://www.w3.org/2001/XMLSchema-instance`">`r`n"
-    $formatContent += "  <RECORD>`r`n"
-    $formatContent += "    <FIELD ID=`"1`" xsi:type=`"CharTerm`" TERMINATOR=`"$Delimiter`" MAX_LENGTH=`"1000000`"/>`r`n"
-    
-    for ($i = 1; $i -lt $columnsTable.Rows.Count; $i++) {
-        $formatContent += "    <FIELD ID=`"$($i+1)`" xsi:type=`"CharTerm`" TERMINATOR=`"$Delimiter`" MAX_LENGTH=`"1000000`"/>`r`n"
-    }
-    
-    $formatContent += "  </RECORD>`r`n"
-    $formatContent += "  <ROW>`r`n"
+    # Create simple non-XML format file (more compatible)
+    $formatContent = "9.0`r`n"  # Version
+    $formatContent += "$($columnsTable.Rows.Count)`r`n"  # Number of columns
     
     for ($i = 0; $i -lt $columnsTable.Rows.Count; $i++) {
         $column = $columnsTable.Rows[$i]
         $dataType = $column["DATA_TYPE"].ToLower()
         
-        # Map SQL types to BCP types
-        $bcpType = if ($dataType -like "*char*") { "SQLCHAR" } 
-                    elseif ($dataType -like "*date*") { "SQLDATE" }
-                    elseif ($dataType -in @("int", "bigint", "smallint", "tinyint")) { "SQLINT" }
-                    elseif ($dataType -in @("decimal", "numeric", "money")) { "SQLDECIMAL" }
-                    elseif ($dataType -in @("float", "real")) { "SQLFLT8" }
-                    else { "SQLCHAR" }
-        
-        $formatContent += "    <COLUMN SOURCE=`"$($i+1)`" NAME=`"$($column["COLUMN_NAME"])`" xsi:type=`"$bcpType`"/>`r`n"
+        # Field number, data type, prefix length, field length, terminator
+        $formatContent += "$($i+1) SQLCHAR 0 0 ""$Delimiter"" $($i+1) $($column["COLUMN_NAME"]) """"`r`n"
     }
-    
-    $formatContent += "  </ROW>`r`n"
-    $formatContent += "</BCPFORMAT>"
     
     # Write format file
     [System.IO.File]::WriteAllText($formatFile, $formatContent)
@@ -789,7 +781,9 @@ function Import-BulkInsert {
     # Create a temporary copy of the CSV with first row removed if needed
     $tempCsvFile = $CsvFile
     if ($SkipHeaderRow) {
-        $tempCsvFile = [System.IO.Path]::GetTempFileName()
+        $tempFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".csv"
+        $tempCsvFile = [System.IO.Path]::Combine($SharedPath, $tempFileName)
+        
         $reader = [System.IO.File]::OpenText($CsvFile)
         $writer = [System.IO.File]::CreateText($tempCsvFile)
         
@@ -805,21 +799,23 @@ function Import-BulkInsert {
         $writer.Close()
     }
     
+    Write-Host "Using format file: $formatFile"
+    Write-Host "Using data file: $tempCsvFile"
+    
     # Execute BULK INSERT
     $bulkInsertSql = @"
     BULK INSERT $Table
-    FROM '$([System.IO.Path]::GetFullPath($tempCsvFile).Replace('\', '\\'))'
+    FROM '$($tempCsvFile.Replace('\', '\\'))'
     WITH (
-        FORMATFILE = '$([System.IO.Path]::GetFullPath($formatFile).Replace('\', '\\'))',
+        FORMATFILE = '$($formatFile.Replace('\', '\\'))',
         FIRSTROW = 1,
-        FIELDTERMINATOR = '$Delimiter',
         ROWTERMINATOR = '\n',
         TABLOCK,
-        MAXERRORS = 10,
-        ERRORFILE = '$([System.IO.Path]::GetTempPath().Replace('\', '\\'))bulkerrors.txt'
+        MAXERRORS = 0
     )
 "@
     
+    Write-Host "SQL Command: $bulkInsertSql"
     $bulkCmd = New-Object System.Data.SqlClient.SqlCommand($bulkInsertSql, $connection)
     
     try {
@@ -828,10 +824,13 @@ function Import-BulkInsert {
     }
     catch {
         Write-Host "Error during BULK INSERT: $($_.Exception.Message)"
+        if ($_.Exception.InnerException) {
+            Write-Host "Inner exception: $($_.Exception.InnerException.Message)"
+        }
     }
     finally {
         # Clean up temp files
-        if ($SkipHeaderRow -and (Test-Path $tempCsvFile)) {
+        if ($SkipHeaderRow -and (Test-Path $tempCsvFile) -and $tempCsvFile -ne $CsvFile) {
             Remove-Item $tempCsvFile -Force
         }
         if (Test-Path $formatFile) {
