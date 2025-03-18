@@ -34,7 +34,7 @@ function Import-ToSqlDatabase {
         [System.Management.Automation.PSCredential]$SqlCredential,
 
         [Parameter(Mandatory=$false)]
-        [int]$BatchSize = 5000,
+        [int]$BatchSize = 0,
 
         [Parameter(Mandatory=$false)]
         [int]$Timeout = 600,
@@ -61,26 +61,13 @@ function Import-ToSqlDatabase {
         [switch]$ManageIndexes,
         
         [Parameter(Mandatory=$false)]
-        [switch]$ManageConstraints,
-
-        [Parameter(Mandatory=$false)]
-        [switch]$HighPerformanceMode
+        [switch]$ManageConstraints
     )
 
     Begin {
         # Normalize the path to the CSV file 
         $CsvFile = (Resolve-Path $CsvFile).Path
         
-        # If parameter HighPerformanceMode is specified, set the batch size to 10000 and the timeout to 1200
-        # and enable ManagedIndexes, ManageConstraints, and UseTableLock
-        if ($HighPerformanceMode) {
-            $BatchSize = 10000
-            $Timeout = 1200
-
-            $ManageIndexes = $true
-            $ManageConstraints = $true
-            $UseTableLock = $true
-        }
 
         # Validate file exists
         if (-not (Test-Path $CsvFile)) {
@@ -89,7 +76,7 @@ function Import-ToSqlDatabase {
 
         # Initialize timing and tracking variables
         $startTime = Get-Date
-        [int]$lastProgressReport = 0
+        #[int]$lastProgressReport = 0
         [int]$rowsProcessed = 0
         $totalRows = $null
 
@@ -101,19 +88,19 @@ function Import-ToSqlDatabase {
             Write-Verbose "CSV contains $totalRows total rows to process"
         }
 
-        # Function to write to log
-        function Write-Log {
-            param([string]$Message)
+        # # Function to write to log
+        # function Write-Host {
+        #     param([string]$Message)
             
-            $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-            $logMessage = "[$timestamp] $Message"
+        #     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        #     $logMessage = "[$timestamp] $Message"
             
-            Write-Verbose $logMessage
+        #     Write-Verbose $logMessage
             
-            if ($LogFile) {
-                $logMessage | Out-File -FilePath $LogFile -Append
-            }
-        }
+        #     if ($LogFile) {
+        #         $logMessage | Out-File -FilePath $LogFile -Append
+        #     }
+        # }
 
         # Build connection string
         if ($SqlCredential) {
@@ -128,7 +115,7 @@ function Import-ToSqlDatabase {
         try {
             $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
             $connection.Open()
-            Write-Log "Connection to SQL Server established successfully."
+            Write-Host "Connection to SQL Server established successfully."
         }
         catch {
             throw "Failed to connect to SQL Server: $_"
@@ -141,10 +128,10 @@ function Import-ToSqlDatabase {
                 [void](
                     $truncateCommand.ExecuteNonQuery()
                 )
-                Write-Log "Table truncated successfully."
+                Write-Host "Table truncated successfully."
             }
             catch {
-                Write-Log "Error truncating table: $_"
+                Write-Host "Error truncating table: $_"
                 throw
             }
         }
@@ -162,14 +149,14 @@ function Import-ToSqlDatabase {
             }
         }
         catch {
-            Write-Log "Error validating table existence: $_"
+            Write-Host "Error validating table existence: $_"
             throw
         }
 
         if ($ManageConstraints) {
             # Disable constraints
             try {
-                Write-Log "Disabling foreign key constraints on $Table..."
+                Write-Host "Disabling foreign key constraints on $Table..."
                 $disableConstraintsCommand = New-Object System.Data.SqlClient.SqlCommand(
                     "ALTER TABLE $Table NOCHECK CONSTRAINT ALL", 
                     $connection
@@ -177,17 +164,17 @@ function Import-ToSqlDatabase {
                 [void](
                     $disableConstraintsCommand.ExecuteNonQuery() 
                 )
-                Write-Log "Foreign key constraints disabled."
+                Write-Host "Foreign key constraints disabled."
             }
             catch {
-                Write-Log "Error disabling constraints: $_"
+                Write-Host "Error disabling constraints: $_"
                 # Consider whether to throw or continue
             }
         }
 
         If ($ManageIndexes) {
             try {
-                Write-Log "Disabling non-clustered indexes on $Table..."
+                Write-Host "Disabling non-clustered indexes on $Table..."
                 $disableIndexesCommand = New-Object System.Data.SqlClient.SqlCommand(
                     "ALTER INDEX ALL ON $Table DISABLE",
                     $connection
@@ -195,10 +182,10 @@ function Import-ToSqlDatabase {
                 [void](
                     $disableIndexesCommand.ExecuteNonQuery()
                 )
-                Write-Log "Non-clustered indexes disabled."
+                Write-Host "Non-clustered indexes disabled."
             }
             catch {
-                Write-Log "Error disabling indexes: $_"
+                Write-Host "Error disabling indexes: $_"
                 # Consider whether to throw or continue
             }
         }
@@ -234,42 +221,53 @@ function Import-ToSqlDatabase {
         $bulkCopy.BulkCopyTimeout = $Timeout
         $bulkCopy.NotifyAfter = $BatchSize
 
-        # Read CSV headers
-        $firstLine = Get-Content $CsvFile -First 1
-        $headers = [List[string]]::new()
-        
-        # Parse headers with quotes handling
-        $inQuotes = $false
+        # # Read CSV headers
 
-        # Use a string builder for header parsing
-        $sb = [System.Text.StringBuilder]::new()
-        foreach ($char in $firstLine.ToCharArray()) {
-            if ($char -eq '"') {
-                $inQuotes = !$inQuotes
-            }
-            elseif ($char -eq $Delimiter[0] -and !$inQuotes) {
-                $currentHeader = $sb.ToString()
-                [void]$sb.Clear()
-                $headers.Add($currentHeader.Trim('"'))
-            }
-            else {
-                [void]$sb.Append($char)
-            }
-        }
-        $currentHeader = $sb.ToString()
-        $headers.Add($currentHeader.Trim('"'))
-        [void]$sb.Clear()
+        # if ($FirstRowColumns) {
+        #     $firstLine = Get-Content $CsvFile -First 1
+        #     $headers = [List[string]]::new()
+        
+        #     # Parse headers with quotes handling
+        #     # $inQuotes = $false
+
+        #     # # Use a string builder for header parsing
+        #     # $sb = [System.Text.StringBuilder]::new()
+        #     # foreach ($char in $firstLine.ToCharArray()) {
+        #     #     if ($char -eq '"') {
+        #     #         $inQuotes = !$inQuotes
+        #     #     }
+        #     #     elseif ($char -eq $Delimiter[0] -and !$inQuotes) {
+        #     #         $currentHeader = $sb.ToString()
+        #     #         [void]$sb.Clear()
+        #     #         $headers.Add($currentHeader.Trim('"'))
+        #     #     }
+        #     #     else {
+        #     #         [void]$sb.Append($char)
+        #     #     }
+        #     # }
+        #     # $currentHeader = $sb.ToString()
+        
+        #     # Use Split to handle headers. This is simpler and more efficient.
+        #     $Hdrs = $firstLine.Split($Delimiter)
+        #     foreach ($Hdr in $Hdrs) {
+        #         # Add Header to $headers list removing any quotes
+        #         $headers.Add($Hdr.Trim('"'))
+        #     }
+        # }
+
+        # $headers.Add($currentHeader.Trim('"'))
+        # [void]$sb.Clear()
         
         # Log different messages based on whether headers are being used
-        if ($FirstRowColumns) {
-            Write-Log "Detected $($headers.Count) column headers in CSV file."
-        } else {
-            if ($SkipHeaderRow) {
-                Write-Log "CSV has $($headers.Count) columns. First row will be skipped (treated as headers)."
-            } else {
-                Write-Log "CSV has $($headers.Count) columns in first row."
-            }
-        }
+        # if ($FirstRowColumns) {
+        #     Write-Host "Detected $($headers.Count) column headers in CSV file."
+        # } else {
+        #     if ($SkipHeaderRow) {
+        #         Write-Host "CSV has $($headers.Count) columns. First row will be skipped (treated as headers)."
+        #     } else {
+        #         Write-Host "CSV has $($headers.Count) columns in first row."
+        #     }
+        # }
 
         # Get table columns to ensure proper mapping
         $schemaCommand = New-Object System.Data.SqlClient.SqlCommand(
@@ -285,175 +283,94 @@ function Import-ToSqlDatabase {
         }
         $reader.Close()
         
-        Write-Log "Detected $($tableColumns.Count) columns in SQL table."
+        Write-Host "Detected $($tableColumns.Count) columns in SQL table."
+
+        #Now that we have the columns from the SQL Table we can map the table import.
+        Write-Host "Reading data from $CsvFile..."
+        If ($FirstRowColumns) {
+            # Import-the data normally including the column headers
+            $csvData = Import-CsV -Path $CsvFile -Delimiter $Delimiter            
+        } elseif($SkipHeaderRow) {
+            # Import the data skipping the header row
+            # we are going to use the sql table columns as the headers
+            [array]$Headers = $tableColumns.Keys
+            $csvData = Import-Csv -Path $CsvFile -Delimiter $Delimiter -Header $Headers | Select-Object -Skip 1 
+        } else {
+            # Import all the data normally specifying headers (there is no header row)
+            $csvData = Import-Csv -Path $CsvFile -Delimiter $Delimiter -Header $Headers
+        }
 
         # Create DataTable
         $dataTable = New-Object System.Data.DataTable
-        
-        # Set up column mappings based on headers or ordinal position
-        if ($FirstRowColumns) {
-            # Match CSV headers to table columns
-            Write-Log "Using first row headers for name-based column mapping."
-            for ($i = 0; $i -lt $headers.Count; $i++) {
-                $header = $headers[$i]
-                $columnName = $tableColumns[$header]
-                
-                if ($columnName) {
-                    [void] (
-                        $dataTable.Columns.Add($columnName)
-                    )
-                    [void](
-                        $bulkCopy.ColumnMappings.Add($i, $columnName)
-                    )
-                    
 
-                    Write-Verbose "Mapped column '$header' to table column '$columnName'"
-                } else {
-                    Write-Warning "Could not find matching table column for CSV column '$header'"
-                    [void](
-                        $dataTable.Columns.Add("Column$i")
-                    )
+        $Columns = $CsvData[0].PSObject.Properties.Name
+ 
+        Write-Host "Mapping columns from CSV to SQL Table"
+        for ($i = 0; $i -lt $Columns.Count; $i++) {
+            if ($FirstRowColumns) {
+                if ($Columns[$i] -ne $tableColumns[$i]) {
+                    Throw "Column $i in CSV file does not match table column $i"
                 }
-            }
-        } else {
-            # Use ordinal position mapping
-            Write-Log "Using ordinal position for column mapping."
-            $columnNames = [array]$tableColumns.Keys
-            for ($i = 0; $i -lt [Math]::Min($headers.Count, $columnNames.Count); $i++) {
-                [void](
-                    $dataTable.Columns.Add($columnNames[$i])
-                )
-                [void](
-                    $bulkCopy.ColumnMappings.Add($i, $columnNames[$i])
-                )
-
-                Write-Verbose "Mapped CSV column position $i to table column '$($columnNames[$i])'"
-            }
-        }
-
-        # Register event handler for NotifyAfter
-        $bulkCopy.Add_SqlRowsCopied({
-            param($senderObj, $rowEventArgs)
-            Write-Log "Copied $($rowEventArgs.RowsCopied) rows so far."
-            
-            # Update progress bar if enabled
-            if ($ShowProgress -and $totalRows) {
-                $percentComplete = [int](($rowEventArgs.RowsCopied / $totalRows) * 100)
-                Write-Progress -Activity "Bulk Copy to SQL" -Status "Copied $($rowEventArgs.RowsCopied) of $totalRows rows" `
-                    -PercentComplete $percentComplete
-            }
-            elseif ($ShowProgress) {
-                Write-Progress -Activity "Bulk Copy to SQL" -Status "Copied $($rowEventArgs.RowsCopied) rows" -PercentComplete -1
-            }
-        })
-
-        # Read and process CSV
-        $reader = New-Object System.IO.StreamReader($CsvFile)
-        
-        # Determine whether to skip the first row during data import
-        if ($FirstRowColumns -or $SkipHeaderRow) {
-            [void](
-                $reader.ReadLine() # Skip header
-            )
-            $lineNumber = 1
-            Write-Log "Skipping first row during data import."
-        } else {
-            $lineNumber = 0
-            Write-Log "Including first row in data import."
+            } 
+            [void]$dataTable.Columns.Add($Columns[$i])
+            [void]$bulkCopy.ColumnMappings.Add($i, $Columns[$i])
         }
         
+
         # Reset counter (already initialized in Begin block)
         $rowsProcessed = 0
+        # $lineNumber - 0
+        # if ($FirstRowColumns -or $SkipHeaderRow) {
+        #     $lineNumber = 1
+        # } 
         
-        Write-Log "Starting CSV import process..."
+        Write-Host "Processing CSV Data..."
         
-        while ($null -ne ($line = $reader.ReadLine())) {
-            $lineNumber++
-            try {
-                # More efficient CSV field parsing using TextFieldParser
-                $fieldParser = New-Object TextFieldParser([System.IO.StringReader]::new($line))
-                $fieldParser.SetDelimiters($Delimiter)
-                $fieldParser.HasFieldsEnclosedInQuotes = $true
-                $fieldParser.TrimWhiteSpace = $true
-                
-                $fields = $fieldParser.ReadFields()
-                $fieldParser.Close()
-                
-                Write-Log "Adding data to datarow..."
-                $row = $dataTable.NewRow()
-                for ($i = 0; $i -lt [Math]::Min($fields.Count, $dataTable.Columns.Count); $i++) {
-                    if ([string]::IsNullOrEmpty($fields[$i])) {
-                        $row[$i] = [DBNull]::Value
-                    } else {
-                        $row[$i] = $fields[$i]
-                    }
-                }
-                [void]($dataTable.Rows.Add($row))
-                $rowsProcessed++
-                
-                # Periodic logging and progress update
-                if (($rowsProcessed - $lastProgressReport) -gt $BatchSize) {
-                    $elapsedTime = (Get-Date) - $startTime
-                    $rowsPerSecond = if ($elapsedTime.TotalSeconds -gt 0) { 
-                        [math]::Round($rowsProcessed / $elapsedTime.TotalSeconds, 1) 
-                    } else { 
-                        0 
-                    }
-                    Write-Log "Processed $rowsProcessed rows so far (${rowsPerSecond} rows/sec)"
-                    $lastProgressReport = $rowsProcessed
-                    
-                    # Update progress if enabled
-                    if ($ShowProgress -and $totalRows) {
-                        $percentComplete = [int](($rowsProcessed / $totalRows) * 100)
-                        $remainingRows = $totalRows - $rowsProcessed
-                        $estimatedSecondsRemaining = [int]($remainingRows / $rowsPerSecond)
-                        $timeRemaining = [TimeSpan]::FromSeconds($estimatedSecondsRemaining).ToString("hh\:mm\:ss")
-                        
-                        Write-Progress -Activity "Importing CSV data" -Status "Processed $rowsProcessed of $totalRows rows" `
-                            -PercentComplete $percentComplete -CurrentOperation "Est. time remaining: $timeRemaining"
-                    }
-                    elseif ($ShowProgress) {
-                        # Fallback if we don't know total rows
-                        Write-Progress -Activity "Importing CSV data" -Status "Processed $rowsProcessed rows" -PercentComplete -1
-                    }
-                }
-                
-                # Batch process - only perform the bulk copy when we've reached the batch size
-                if ($dataTable.Rows.Count -ge $BatchSize) {
-                    Write-Log "Writing DataTable to SQL Server (batch of $($dataTable.Rows.Count) rows)..."
+        foreach ($CsvRow in $CsvData) {
+            $row = $dataTable.NewRow()
+            $CsvRow.PSObject.Properties | ForEach-Object {
+                $row[$_.Name] = $_.Value
+            }
+            $DataTable.Rows.Add($row)
+            if ($BatchSize -gt 0) {
+                If ($dataTable.Rows.Count -ge $BatchSize) {
+                    Write-Host "Writing DataTable to SQL Server (batch of $($dataTable.Rows.Count) rows)..."
                     try {
+                        Write-Host "Writing $($dataTable.Rows.Count) rows to SQL Server..."
                         [void]($bulkCopy.WriteToServer($dataTable))
                         [void]($dataTable.Clear())
                     }
                     catch {
-                        Write-Log "Error during bulk copy: $_"
+                        Write-Host "Error during bulk copy: $_"
                         throw
                     }
                 }
             }
-            catch {
-                Write-Log "Error on line $($lineNumber): $_"
-                # Continue processing despite errors
+            $rowsProcessed++
+            If ($ShowProgress) {
+                $PercentComplete = [int](($rowsProcessed / $csvData.count) * 100)
+                Write-Progress -Activity "Processing CSV data" -Status "Processed $rowsProcessed rows" -PercentComplete $PercentComplete
             }
         }
-        # Write remaining rows
+        # Either write the entire table ($BatchSize = 0) or the remaining rows
         if ($dataTable.Rows.Count -gt 0) {
-            Write-Log "Writing remaining $($dataTable.Rows.Count) rows to SQL Server..."
+            Write-Host "Writing $($dataTable.Rows.Count) rows to SQL Server..."
             try {
                 [void](
-                $bulkCopy.WriteToServer($dataTable)
+                    $bulkCopy.WriteToServer($dataTable)
                 )
             }
             catch {
-                Write-Log "Error during final bulk copy: $_"
+                Write-Host "Error during final bulk copy: $_"
                 throw
             }
+        
         }
     }
     end {
         # Final cleanup
-        $sb = $null
-        $reader.Close()
+        #$sb = $null
+        #$reader.Close()
         $connection.Close()
         
         # Final stats
@@ -463,11 +380,11 @@ function Import-ToSqlDatabase {
         } else {
             0
         }
-        Write-Log "Import completed. Total rows processed: $rowsProcessed in $($totalTime.ToString('hh\:mm\:ss')). Average speed: $rowsPerSecond rows/sec"
+        Write-Host "Import completed. Total rows processed: $rowsProcessed in $($totalTime.ToString('hh\:mm\:ss')). Average speed: $rowsPerSecond rows/sec"
 
         if ($ManageIndexes) {
             try {
-                Write-Log "Re-enabling non-clustered indexes on $Table..."
+                Write-Host "Re-enabling non-clustered indexes on $Table..."
                 $enableIndexesCommand = New-Object System.Data.SqlClient.SqlCommand(
                     "ALTER INDEX ALL ON $Table REBUILD",
                     $connection
@@ -475,17 +392,17 @@ function Import-ToSqlDatabase {
                 [void](
                     $enableIndexesCommand.ExecuteNonQuery()
                 )
-                Write-Log "Non-clustered indexes re-enabled."
+                Write-Host "Non-clustered indexes re-enabled."
             }
             catch {
-                Write-Log "Error re-enabling indexes: $_"
+                Write-Host "Error re-enabling indexes: $_"
                 # Consider whether to throw or continue
             }
         }
 
         if ($ManageConstraints) {
             try {
-                Write-Log "Re-enabling foreign key constraints on $Table..."
+                Write-Host "Re-enabling foreign key constraints on $Table..."
                 $enableConstraintsCommand = New-Object System.Data.SqlClient.SqlCommand(
                     "ALTER TABLE $Table CHECK CONSTRAINT ALL",
                     $connection
@@ -493,10 +410,10 @@ function Import-ToSqlDatabase {
                 [void](
                     $enableConstraintsCommand.ExecuteNonQuery()
                 )
-                Write-Log "Foreign key constraints re-enabled."
+                Write-Host "Foreign key constraints re-enabled."
             }
             catch {
-                Write-Log "Error re-enabling constraints: $_"
+                Write-Host "Error re-enabling constraints: $_"
                 # Consider whether to throw or continue
             }
         }
@@ -566,143 +483,6 @@ function Import-ToSqlDatabase {
     .EXAMPLE
     Import-ToSqlDatabase -CsvFile 'C:\data\employees.csv' -SqlServer 'localhost' -Database 'HR' -Table 'Employees'
     Imports data from the 'employees.csv' file into the 'Employees' table in the 'HR' database on the 'localhost' SQL Server instance. 
-    #>
-}
-
-# Add this diagnostic code to your module
-function Find-ProblemData {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$CsvFile,
-        
-        [Parameter(Mandatory=$true)]
-        [string]$SqlServer,
-        
-        [Parameter(Mandatory=$true)]
-        [string]$Database,
-        
-        [Parameter(Mandatory=$true)]
-        [string]$Table,
-        
-        [Parameter(Mandatory=$false)]
-        [string]$Delimiter = ",",
-        
-        [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$SqlCredential
-    )
-    
-    # Build connection string and connect
-    if ($SqlCredential) {
-        $username = $SqlCredential.UserName
-        $password = $SqlCredential.GetNetworkCredential().Password
-        $connectionString = "Server=$SqlServer;Database=$Database;User Id=$username;Password=$password;"
-    } else {
-        $connectionString = "Server=$SqlServer;Database=$Database;Integrated Security=True;"
-    }
-    
-    $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
-    $connection.Open()
-    
-    # Get column info
-    $columnInfo = @{}
-    $columnsInfoCmd = New-Object System.Data.SqlClient.SqlCommand(
-        "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '$Table' ORDER BY ORDINAL_POSITION",
-        $connection
-    )
-    $columnsReader = $columnsInfoCmd.ExecuteReader()
-    $orderedColumns = @()
-    while ($columnsReader.Read()) {
-        $columnName = $columnsReader["COLUMN_NAME"]
-        $dataType = $columnsReader["DATA_TYPE"]
-        $maxLength = if ($columnsReader["CHARACTER_MAXIMUM_LENGTH"] -is [DBNull]) { [int]::MaxValue } else { $columnsReader["CHARACTER_MAXIMUM_LENGTH"] }
-        
-        $columnInfo[$columnName] = @{
-            DataType = $dataType
-            MaxLength = $maxLength
-        }
-        $orderedColumns += $columnName
-    }
-    $columnsReader.Close()
-    
-    # Process CSV
-    $reader = New-Object System.IO.StreamReader($CsvFile)
-    [void]($reader.ReadLine()) # Skip header
-    
-    $problemRows = @()
-    $rowNum = 1
-    
-    while ($null -ne ($line = $reader.ReadLine())) {
-        $rowNum++
-        $fields = @()
-        $inQuotes = $false
-        $sb = [System.Text.StringBuilder]::new()
-        
-        foreach ($char in $line.ToCharArray()) {
-            if ($char -eq '"') {
-                $inQuotes = !$inQuotes
-            }
-            elseif ($char -eq $Delimiter[0] -and !$inQuotes) {
-                $fields += $sb.ToString().Trim('"')
-                [void]$sb.Clear()
-            }
-            else {
-                [void]$sb.Append($char)
-            }
-        }
-        $fields += $sb.ToString().Trim('"')
-        
-        # Check for length problems
-        for ($i = 0; $i -lt [Math]::Min($fields.Count, $orderedColumns.Count); $i++) {
-            if ($fields[$i] -ne '') {
-                $columnName = $orderedColumns[$i]
-                $colInfo = $columnInfo[$columnName]
-                
-                if ($colInfo.DataType -in @('varchar', 'nvarchar', 'char', 'nchar') -and 
-                    $fields[$i].Length -gt $colInfo.MaxLength) {
-                    $problemRows += [PSCustomObject]@{
-                        RowNumber = $rowNum
-                        Column = $columnName
-                        DataLength = $fields[$i].Length
-                        MaxAllowed = $colInfo.MaxLength
-                        Data = if ($fields[$i].Length > 50) { "$($fields[$i].Substring(0, 47))..." } else { $fields[$i] }
-                    }
-                }
-            }
-        }
-        
-        # Provide progress output every 1000 rows
-        if ($rowNum % 1000 -eq 0) {
-            Write-Host "Processed $rowNum rows..."
-        }
-    }
-    
-    $reader.Close()
-    $connection.Close()
-    
-    return $problemRows
-    <#
-    .SYNOPSIS
-    Finds rows in a CSV file that contain data that exceeds the maximum length allowed in the corresponding SQL table columns.
-    .DESCRIPTION
-    The Find-ProblemData function reads a CSV file and compares the length of each field to the maximum length allowed in the corresponding
-    SQL table columns. If a field exceeds the maximum length, the row number, column name, actual data length, maximum allowed length, and
-    a sample of the data are recorded. The function returns a list of objects representing the problem rows.
-    .PARAMETER CsvFile
-    The path to the CSV file to analyze.
-    .PARAMETER SqlServer
-    The name of the SQL Server instance to connect to.
-    .PARAMETER Database
-    The name of the database containing the table to compare against.
-    .PARAMETER Table
-    The name of the table to compare against.
-    .PARAMETER Delimiter
-    The delimiter used in the CSV file. The default is a comma (,).
-    .PARAMETER SqlCredential
-    A PSCredential object containing the username and password to use when connecting to SQL Server. If not provided, Windows authentication will be used.
-    .EXAMPLE
-    Find-ProblemData -CsvFile 'C:\data\employees.csv' -SqlServer 'localhost' -Database 'HR' -Table 'Employees'
-    Analyzes the 'employees.csv' file and compares the data lengths to the maximum allowed lengths in the 'Employees' table in the 'HR' database.    
     #>
 }
 
