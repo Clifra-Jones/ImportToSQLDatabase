@@ -1,5 +1,6 @@
 using namespace System.Collections.Generic
-# Modern-CsvSqlImport.psm1
+using namespace Microsoft.VisualBasic.FileIO
+
 # A PowerShell module for importing CSV data into SQL Server tables
 
 function Import-ToSqlDatabase {
@@ -369,40 +370,25 @@ function Import-ToSqlDatabase {
         while ($null -ne ($line = $reader.ReadLine())) {
             $lineNumber++
             try {
-                # Handle quoted fields with delimiters inside
-                $fields = @()
-                $inQuotes = $false
+                # More efficient CSV field parsing using TextFieldParser
+                $fieldParser = New-Object TextFieldParser([System.IO.StringReader]::new($line))
+                $fieldParser.SetDelimiters($Delimiter)
+                $fieldParser.HasFieldsEnclosedInQuotes = $true
+                $fieldParser.TrimWhiteSpace = $true
                 
-                # Use StringBuilder for field parsing
-                Write-Log "Starting field parsing for line $lineNumber..."
-                [void]$sb.Clear()
-                foreach ($char in $line.ToCharArray()) {
-                    if ($char -eq '"') {
-                        $inQuotes = !$inQuotes
-                    }
-                    elseif ($char -eq $Delimiter[0] -and !$inQuotes) {
-                        $fields += $sb.ToString().Trim('"')
-                        [void]$sb.Clear()
-                    }
-                    else {
-                        [void]$sb.Append($char)
-                    }
-                }
-                $fields += $sb.ToString().Trim('"')
-                [void]$sb.Clear()
+                $fields = $fieldParser.ReadFields()
+                $fieldParser.Close()
                 
                 Write-Log "Adding data to datarow..."
                 $row = $dataTable.NewRow()
                 for ($i = 0; $i -lt [Math]::Min($fields.Count, $dataTable.Columns.Count); $i++) {
-                    if ($fields[$i] -eq '') {
+                    if ([string]::IsNullOrEmpty($fields[$i])) {
                         $row[$i] = [DBNull]::Value
                     } else {
                         $row[$i] = $fields[$i]
                     }
                 }
-                [void](
-                    $dataTable.Rows.Add($row)
-                )
+                [void]($dataTable.Rows.Add($row))
                 $rowsProcessed++
                 
                 # Periodic logging and progress update
@@ -436,12 +422,8 @@ function Import-ToSqlDatabase {
                 if ($dataTable.Rows.Count -ge $BatchSize) {
                     Write-Log "Writing DataTable to SQL Server (batch of $($dataTable.Rows.Count) rows)..."
                     try {
-                        [void](
-                            $bulkCopy.WriteToServer($dataTable)
-                        )
-                        [void](
-                            $dataTable.Clear()
-                        )
+                        [void]($bulkCopy.WriteToServer($dataTable))
+                        [void]($dataTable.Clear())
                     }
                     catch {
                         Write-Log "Error during bulk copy: $_"
@@ -454,7 +436,6 @@ function Import-ToSqlDatabase {
                 # Continue processing despite errors
             }
         }
-
         # Write remaining rows
         if ($dataTable.Rows.Count -gt 0) {
             Write-Log "Writing remaining $($dataTable.Rows.Count) rows to SQL Server..."
