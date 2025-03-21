@@ -1077,8 +1077,7 @@ function Import-BulkInsert {
         [switch]$HandleTrailingDelimiters
     )
     
-    # Check if running on Windows
-    if ($IsWindows) 
+    
     if (-not $SharedPath) {
         # Try to use the same directory as the input file
         $SharedPath = [System.IO.Path]::GetDirectoryName($CsvFile)
