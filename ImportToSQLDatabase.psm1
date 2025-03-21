@@ -1,7 +1,619 @@
 using namespace System.Collections.Generic
 using namespace Microsoft.VisualBasic.FileIO
 
-# A PowerShell module for importing CSV data into SQL Server tables
+function Create_smbBcpFormatFile {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$SambaShare,
+
+        [Parameter(Mandatory = $false)]
+        [PSCredential]$Credentials,
+        
+        [Parameter(Mandatory = $true)]
+        [int]$ColumnCount,
+        
+        [Parameter(Mandatory = $true)]
+        [System.Data.DataTable]$ColumnsTable,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$Delimiter = ","
+    )
+    
+    # Parse Samba share information
+    if ($SambaShare -match "//([^/]+)/([^/]+)(?:/(.*))?") {
+        $Server = $matches[1]
+        $Share = $matches[2]
+        $RemotePath = if ($matches[3]) { $matches[3] } else { "" }
+    }
+    else {
+        Write-Error "Invalid Samba share format. Expected //server/share/path"
+        return $null
+    }
+    
+    # Create format file name with random component
+    $formatFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".fmt"
+    $localFormatFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), $formatFileName)
+    
+    # Create XML format file content
+    $formatContent = @'
+<?xml version="1.0"?>
+<BCPFORMAT xmlns="http://schemas.microsoft.com/sqlserver/2004/bulkload/format" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+ <RECORD>
+'@
+
+    # Add field definitions
+    for ($i = 0; $i -lt $ColumnCount; $i++) {
+        # Last field needs special handling for trailing delimiter issues
+        $terminator = if ($i -eq $ColumnCount - 1) { "\r\n" } else { $Delimiter }
+        
+        # Use 8000 as MAX_LENGTH instead of 0
+        $formatContent += @'
+  <FIELD ID="$($i+1)" xsi:type="CharTerm" TERMINATOR="$terminator" MAX_LENGTH="8000"/>
+'@
+    }
+
+    $formatContent += @'
+ </RECORD>
+ <ROW>
+'@
+
+    # Add column mappings
+    for ($i = 0; $i -lt $ColumnCount; $i++) {
+        $columnName = $ColumnsTable.Rows[$i]["COLUMN_NAME"]
+        $dataType = $ColumnsTable.Rows[$i]["DATA_TYPE"].ToString().ToUpper()
+        
+        # Map SQL data types to appropriate BCP format types
+        $xsiType = switch ($dataType) {
+            "INT" { "SQLINT" }
+            "BIGINT" { "SQLBIGINT" }
+            "SMALLINT" { "SQLSMALLINT" }
+            "TINYINT" { "SQLTINYINT" }
+            "BIT" { "SQLBIT" }
+            "DECIMAL" { "SQLDECIMAL" }
+            "NUMERIC" { "SQLNUMERIC" }
+            "MONEY" { "SQLMONEY" }
+            "SMALLMONEY" { "SQLSMALLMONEY" }
+            "FLOAT" { "SQLFLT8" }
+            "REAL" { "SQLFLT4" }
+            "DATETIME" { "SQLDATETIME" }
+            "DATETIME2" { "SQLDATETIME" }
+            "DATE" { "SQLDATE" }
+            "TIME" { "SQLTIME" }
+            "DATETIMEOFFSET" { "SQLDATETIMEOFFSET" }
+            "SMALLDATETIME" { "SQLSMALLDDATETIME" }
+            default { "SQLVARYCHAR" }  # Default to VARCHAR for text and other types
+        }
+        
+        $formatContent += @"
+  <COLUMN SOURCE=""$($i+1)"" NAME=""$columnName"" xsi:type=""$xsiType""/>
+"@
+    }
+
+    $formatContent += @'
+ </ROW>
+</BCPFORMAT>
+'@
+
+    # Write format file locally first
+    [System.IO.File]::WriteAllText($localFormatFile, $formatContent)
+    Write-Host "Created local format file: $localFormatFile"
+    
+    # Handle domain usernames (DOMAIN\Username format)
+    if ($SMBCredential) {
+        $Username = $SMBCredentials.UserName
+        $PW = $Credentials.GetNetworkCredential().Password
+        $formattedUsername = $Username
+        if ($Username -match '\\') {
+            # Escape the backslash for smbclient
+            $formattedUsername = $Username -replace '\\', '\\\\'
+        }
+    }
+
+    # Upload the format file to Samba share
+    $smbCommand = "put `"$localFormatFile`" `"$formatFileName`""
+    if (![string]::IsNullOrEmpty($RemotePath)) {
+        $smbCommand = "cd `"$RemotePath`"; $smbCommand"
+    }
+    
+    # Execute smbclient command
+    Write-Host "Uploading format file to Samba share..."
+    $smbClientPath = "smbclient" # Assumes smbclient is in PATH
+    if ($SMBCredential) {
+        $smbArguments = @(
+            "//$Server/$Share",
+            "-U", "$formattedUsername%$PW",
+            "-c", $smbCommand
+        )
+    } else {
+        $smbArguments = @(
+            "//$Server/$Share",
+            "-c", $smbCommand
+        )
+    }
+
+    try {
+        $process = Start-Process -FilePath $smbClientPath -ArgumentList $smbArguments -NoNewWindow -Wait -PassThru
+        
+        if ($process.ExitCode -eq 0) {
+            $remoteFormatFile = if ($RemotePath) { "$RemotePath/$formatFileName" } else { $formatFileName }
+            Write-Host "Successfully uploaded format file to //$Server/$Share/$remoteFormatFile"
+            
+            # Clean up local temp file
+            Remove-Item -Path $localFormatFile -Force
+            Write-Host "Cleaned up local temporary format file"
+            
+            # Return the remote path of the format file
+            return "//$Server/$Share/$remoteFormatFile"
+        }
+        else {
+            Write-Error "Failed to upload format file to Samba share. Exit code: $($process.ExitCode)"
+            return $null
+        }
+    }
+    catch {
+        Write-Error "Error executing smbclient: $_"
+        return $null
+    }
+}
+
+# Example usage:
+# $formatFilePath = Create-BcpFormatFile -SambaShare "//server/share/path" -Username "user" -Password "pass" -ColumnCount 5 -ColumnsTable $columnsTable -Delimiter ","
+#
+# $bulkInsertSql = @"
+# BULK INSERT $Table
+# FROM '$tempCsvFile'
+# WITH (
+#     FORMATFILE = '$formatFilePath',
+#     FIRSTROW = 1,
+#     TABLOCK,
+#     MAXERRORS = 0
+# )
+# "@
+
+function Create_winBcpFormatFile {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$SharedPath,
+        
+        [Parameter(Mandatory = $true)]
+        [int]$ColumnCount,
+        
+        [Parameter(Mandatory = $true)]
+        [System.Data.DataTable]$ColumnsTable,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$Delimiter = ",",
+        
+        [Parameter(Mandatory = $false)]
+        [string]$Table
+    )
+    
+    # Create format file
+    $formatFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".fmt"
+    $formatFile = [System.IO.Path]::Combine($SharedPath, $formatFileName)
+    
+    # Create XML format file for better handling of edge cases
+    # Using MAX_LENGTH="8000" instead of "0" to fix the error
+    $formatContent = @'
+<?xml version="1.0"?>
+<BCPFORMAT xmlns="http://schemas.microsoft.com/sqlserver/2004/bulkload/format" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+ <RECORD>
+'@
+
+    # Add field definitions
+    for ($i = 0; $i -lt $ColumnCount; $i++) {
+        # Last field needs special handling for trailing delimiter issues
+        $terminator = if ($i -eq $ColumnCount - 1) { "\r\n" } else { $Delimiter }
+        
+        # Use 8000 as MAX_LENGTH instead of 0
+        $formatContent += @"
+  <FIELD ID=""$($i+1)"" xsi:type=""CharTerm"" TERMINATOR=""$terminator"" MAX_LENGTH=""8000""/>
+"@
+    }
+
+    $formatContent += @'
+ </RECORD>
+ <ROW>
+'@
+
+    # Add column mappings
+    for ($i = 0; $i -lt $ColumnCount; $i++) {
+        $columnName = $ColumnsTable.Rows[$i]["COLUMN_NAME"]
+        $dataType = $ColumnsTable.Rows[$i]["DATA_TYPE"].ToString().ToUpper()
+        
+        # Map SQL data types to appropriate BCP format types
+        $xsiType = switch ($dataType) {
+            "INT" { "SQLINT" }
+            "BIGINT" { "SQLBIGINT" }
+            "SMALLINT" { "SQLSMALLINT" }
+            "TINYINT" { "SQLTINYINT" }
+            "BIT" { "SQLBIT" }
+            "DECIMAL" { "SQLDECIMAL" }
+            "NUMERIC" { "SQLNUMERIC" }
+            "MONEY" { "SQLMONEY" }
+            "SMALLMONEY" { "SQLSMALLMONEY" }
+            "FLOAT" { "SQLFLT8" }
+            "REAL" { "SQLFLT4" }
+            "DATETIME" { "SQLDATETIME" }
+            "DATETIME2" { "SQLDATETIME" }
+            "DATE" { "SQLDATE" }
+            "TIME" { "SQLTIME" }
+            "DATETIMEOFFSET" { "SQLDATETIMEOFFSET" }
+            "SMALLDATETIME" { "SQLSMALLDDATETIME" }
+            default { "SQLVARYCHAR" }  # Default to VARCHAR for text and other types
+        }
+        
+        $formatContent += @"
+  <COLUMN SOURCE=""$($i+1)"" NAME=""$columnName"" xsi:type=""$xsiType""/>
+"@
+    }
+
+    $formatContent += @'
+ </ROW>
+</BCPFORMAT>
+'@
+
+    # Write format file
+    [System.IO.File]::WriteAllText($formatFile, $formatContent)
+    Write-Host "Created format file: $formatFile"
+    
+    # Return the format file path or generate SQL command if Table is provided
+    if ($Table) {
+        # Return the BULK INSERT SQL command
+        $bulkInsertSql = @"
+BULK INSERT $Table
+FROM '$formatFile'
+WITH (
+    FORMATFILE = '$formatFile',
+    FIRSTROW = 1,
+    TABLOCK,
+    MAXERRORS = 0
+)
+"@
+        return $bulkInsertSql
+    } else {
+        # Just return the format file path
+        return $formatFile
+    }
+}
+
+# Example usage:
+# $formatFile = Create-BcpFormatFile -SharedPath "\\server\share" -ColumnCount 5 -ColumnsTable $columnsTable
+# 
+# # Or with SQL command generation:
+# $bulkInsertSql = Create-BcpFormatFile -SharedPath "\\server\share" -ColumnCount 5 -ColumnsTable $columnsTable -Table "dbo.MyTable"
+
+function Process_CsvToSambaShare {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$CsvFile,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$SambaShare,
+
+        [Parameter(Mandatory = $true)]
+        [pscredential]$SMBCredential,
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipHeaderRow,
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$HandleTrailingDelimiters,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$Delimiter = ",",
+        
+        [Parameter(Mandatory = $false)]
+        [int]$ColumnCount = 0
+    )
+    
+    # Parse Samba share information
+    if ($SambaShare -match "//([^/]+)/([^/]+)(?:/(.*))?") {
+        $Server = $matches[1]
+        $Share = $matches[2]
+        $RemotePath = if ($matches[3]) { $matches[3] } else { "" }
+    }
+    else {
+        Write-Error "Invalid Samba share format. Expected //server/share/path"
+        return
+    }
+    
+    Write-Host "Processing CSV file: $CsvFile"
+    Write-Host "Target Samba share: $SambaShare"
+    Write-Host "Server: $Server, Share: $Share, Path: $RemotePath"
+    
+    # Check if we need to preprocess the file
+    $tempCsvFile = $CsvFile
+    if ($SkipHeaderRow -or $HandleTrailingDelimiters) {
+        $tempFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".csv"
+        $tempCsvFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), $tempFileName)
+        
+        $reader = [System.IO.File]::OpenText($CsvFile)
+        $writer = [System.IO.File]::CreateText($tempCsvFile)
+        
+        # Skip header if needed
+        if ($SkipHeaderRow) {
+            [void]$reader.ReadLine()
+            Write-Host "Skipping header row."
+        }
+        
+        # Process and write remaining content
+        $lineNum = 0
+        while ($null -ne ($line = $reader.ReadLine())) {
+            $lineNum++
+            
+            if ($HandleTrailingDelimiters -and $ColumnCount -gt 0) {
+                # Count delimiters in the line
+                $delimiterCount = ($line.ToCharArray() | Where-Object { $_ -eq $Delimiter[0] }).Count
+                
+                # Ensure we have the right number of delimiters (should be columnCount - 1)
+                # If too few delimiters, add them; if too many, remove them
+                if ($delimiterCount -lt ($ColumnCount - 1)) {
+                    # Add missing delimiters
+                    $line = $line + ($Delimiter * (($ColumnCount - 1) - $delimiterCount))
+                    Write-Verbose "Added delimiters to line $lineNum"
+                }
+                elseif ($delimiterCount -gt ($ColumnCount - 1)) {
+                    # Remove excess delimiters by parsing and taking only the columns we need
+                    $fields = @()
+                    $inQuotes = $false
+                    $sb = [System.Text.StringBuilder]::new()
+                    
+                    foreach ($char in $line.ToCharArray()) {
+                        if ($char -eq '"') {
+                            $inQuotes = !$inQuotes
+                            [void]$sb.Append($char)
+                        }
+                        elseif ($char -eq $Delimiter[0] -and !$inQuotes) {
+                            $fields += $sb.ToString()
+                            [void]$sb.Clear()
+                            
+                            # If we already have enough fields, stop processing
+                            if ($fields.Count -ge $ColumnCount) {
+                                break
+                            }
+                        }
+                        else {
+                            [void]$sb.Append($char)
+                        }
+                    }
+                    
+                    # Add the last field if needed
+                    if ($fields.Count -lt $ColumnCount) {
+                        $fields += $sb.ToString()
+                    }
+                    
+                    # Rebuild the line with the correct number of delimiters
+                    $line = $fields[0]
+                    for ($i = 1; $i -lt $ColumnCount; $i++) {
+                        if ($i -lt $fields.Count) {
+                            $line += "$Delimiter$($fields[$i])"
+                        }
+                        else {
+                            $line += "$Delimiter"
+                        }
+                    }
+                    
+                    Write-Verbose "Fixed excess delimiters in line $lineNum"
+                }
+            }
+            
+            $writer.WriteLine($line)
+            
+            # Show progress every 10,000 lines
+            if ($lineNum % 10000 -eq 0) {
+                Write-Host "Processed $lineNum lines..."
+            }
+        }
+        
+        $reader.Close()
+        $writer.Close()
+        Write-Host "Created preprocessed file with $lineNum lines: $tempCsvFile"
+    }
+    
+    # Determine remote filename
+    if ($SkipHeaderRow -or $HandleTrailingDelimiters) {
+        $remoteFileName = [System.IO.Path]::GetFileName($tempCsvFile)
+    }
+    else {
+        $remoteFileName = [System.IO.Path]::GetFileName($CsvFile)
+    }
+    
+    # Create smbclient command
+    $smbCommand = "put `"$tempCsvFile`" `"$remoteFileName`""
+    if (![string]::IsNullOrEmpty($RemotePath)) {
+        $smbCommand = "cd `"$RemotePath`"; $smbCommand"
+    }
+    
+    # Execute smbclient command
+    Write-Host "Uploading file to Samba share..."
+    $smbClientPath = "smbclient" # Assumes smbclient is in PATH
+    
+    # Handle domain usernames (DOMAIN\Username format)
+    if ($SMBCredential -and (-not $IsWindows)) {
+        $Username = $SMBCredential.UserName 
+        $PW = $SMBCredential.GetNetworkCredential().Password
+        $formattedUsername = $Username
+        if ($Username -match '\\') {
+            # Escape the backslash for smbclient
+            $formattedUsername = $Username -replace '\\', '\\\\'
+        }
+    } 
+    
+    if ($SMBCredential -and (-not $IsWindows)) {
+            $smbArguments = @(
+            "//$Server/$Share",
+            "-U", "$formattedUsername%$PW",
+            "-c", $smbCommand
+        )
+    } else {
+        $smbArguments = @(
+            "//$Server/$Share",
+            "-c", $smbCommand
+        )
+    }
+
+    # Execute the smbclient command
+    try {
+        $process = Start-Process -FilePath $smbClientPath -ArgumentList $smbArguments -NoNewWindow -Wait -PassThru
+        
+        if ($process.ExitCode -eq 0) {
+            $remotePath = if ($RemotePath) { "$RemotePath/$remoteFileName" } else { $remoteFileName }
+            Write-Host "Successfully uploaded $remoteFileName to //$Server/$Share/$remotePath"
+        }
+        else {
+            Write-Error "Failed to upload to Samba share. Exit code: $($process.ExitCode)"
+        }
+    }
+    catch {
+        Write-Error "Error executing smbclient: $_"
+    }
+    
+    # Clean up temp file if created
+    if (($SkipHeaderRow -or $HandleTrailingDelimiters) -and $tempCsvFile -ne $CsvFile) {
+        Remove-Item -Path $tempCsvFile -Force
+        Write-Host "Cleaned up temporary file"
+    }
+    
+    Write-Host "Process completed successfully"
+}
+
+# Example usage:
+# Process-CsvToSambaShare -CsvFile "data.csv" -SambaShare "//server/share/folder" `
+#                         -$SMBCredential $SMBCredential -HandleTrailingDelimiters -Delimiter "," -ColumnCount 5
+
+function Process_CsvToWindowsShare {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$CsvFile,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$SharedPath,
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipHeaderRow,
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$HandleTrailingDelimiters,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$Delimiter = ",",
+        
+        [Parameter(Mandatory = $false)]
+        [int]$ColumnCount = 0
+    )
+    
+    Write-Host "Processing CSV file: $CsvFile"
+    Write-Host "Target Windows share: $SharedPath"
+    
+    # Determine if we need to preprocess the file
+    $tempCsvFile = $CsvFile
+    if ($SkipHeaderRow -or $HandleTrailingDelimiters) {
+        $tempFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".csv"
+        $tempCsvFile = [System.IO.Path]::Combine($SharedPath, $tempFileName)
+        
+        $reader = [System.IO.File]::OpenText($CsvFile)
+        $writer = [System.IO.File]::CreateText($tempCsvFile)
+        
+        # Skip header if needed
+        if ($SkipHeaderRow) {
+            [void]$reader.ReadLine()
+            Write-Host "Skipping header row."
+        }
+        
+        # Process and write remaining content
+        $lineNum = 0
+        while ($null -ne ($line = $reader.ReadLine())) {
+            $lineNum++
+            
+            if ($HandleTrailingDelimiters -and $ColumnCount -gt 0) {
+                # Count delimiters in the line
+                $delimiterCount = ($line.ToCharArray() | Where-Object { $_ -eq $Delimiter[0] }).Count
+                
+                # Ensure we have the right number of delimiters (should be columnCount - 1)
+                # If too few delimiters, add them; if too many, remove them
+                if ($delimiterCount -lt ($ColumnCount - 1)) {
+                    # Add missing delimiters
+                    $line = $line + ($Delimiter * (($ColumnCount - 1) - $delimiterCount))
+                    Write-Verbose "Added delimiters to line $lineNum"
+                }
+                elseif ($delimiterCount -gt ($ColumnCount - 1)) {
+                    # Remove excess delimiters by parsing and taking only the columns we need
+                    $fields = @()
+                    $inQuotes = $false
+                    $sb = [System.Text.StringBuilder]::new()
+                    
+                    foreach ($char in $line.ToCharArray()) {
+                        if ($char -eq '"') {
+                            $inQuotes = !$inQuotes
+                            [void]$sb.Append($char)
+                        }
+                        elseif ($char -eq $Delimiter[0] -and !$inQuotes) {
+                            $fields += $sb.ToString()
+                            [void]$sb.Clear()
+                            
+                            # If we already have enough fields, stop processing
+                            if ($fields.Count -ge $ColumnCount) {
+                                break
+                            }
+                        }
+                        else {
+                            [void]$sb.Append($char)
+                        }
+                    }
+                    
+                    # Add the last field if needed
+                    if ($fields.Count -lt $ColumnCount) {
+                        $fields += $sb.ToString()
+                    }
+                    
+                    # Rebuild the line with the correct number of delimiters
+                    $line = $fields[0]
+                    for ($i = 1; $i -lt $ColumnCount; $i++) {
+                        if ($i -lt $fields.Count) {
+                            $line += "$Delimiter$($fields[$i])"
+                        }
+                        else {
+                            $line += "$Delimiter"
+                        }
+                    }
+                    
+                    Write-Verbose "Fixed excess delimiters in line $lineNum"
+                }
+            }
+            
+            $writer.WriteLine($line)
+            
+            # Show progress every 10,000 lines
+            if ($lineNum % 10000 -eq 0) {
+                Write-Host "Processed $lineNum lines..."
+            }
+        }
+        
+        $reader.Close()
+        $writer.Close()
+        Write-Host "Created preprocessed file with $lineNum lines: $tempCsvFile"
+        
+        # Return the path to the processed file
+        return $tempCsvFile
+    }
+    else {
+        # If no processing was needed, copy the file to the shared path
+        $destFile = [System.IO.Path]::Combine($SharedPath, [System.IO.Path]::GetFileName($CsvFile))
+        Copy-Item -Path $CsvFile -Destination $destFile -Force
+        Write-Host "Copied file to shared path: $destFile"
+        return $destFile
+    }
+}
+
+# Example usage:
+# $processedFile = Process-CsvToWindowsShare -CsvFile "C:\path\to\data.csv" `
+#                                            -SharedPath "\\server\share\folder" `
+#                                            -SkipHeaderRow -HandleTrailingDelimiters -Delimiter "," -ColumnCount 5
 
 function Import-ToSqlDatabase {
     [CmdletBinding()]
@@ -220,54 +832,6 @@ function Import-ToSqlDatabase {
         $bulkCopy.BatchSize = $BatchSize
         $bulkCopy.BulkCopyTimeout = $Timeout
         $bulkCopy.NotifyAfter = $BatchSize
-
-        # # Read CSV headers
-
-        # if ($FirstRowColumns) {
-        #     $firstLine = Get-Content $CsvFile -First 1
-        #     $headers = [List[string]]::new()
-        
-        #     # Parse headers with quotes handling
-        #     # $inQuotes = $false
-
-        #     # # Use a string builder for header parsing
-        #     # $sb = [System.Text.StringBuilder]::new()
-        #     # foreach ($char in $firstLine.ToCharArray()) {
-        #     #     if ($char -eq '"') {
-        #     #         $inQuotes = !$inQuotes
-        #     #     }
-        #     #     elseif ($char -eq $Delimiter[0] -and !$inQuotes) {
-        #     #         $currentHeader = $sb.ToString()
-        #     #         [void]$sb.Clear()
-        #     #         $headers.Add($currentHeader.Trim('"'))
-        #     #     }
-        #     #     else {
-        #     #         [void]$sb.Append($char)
-        #     #     }
-        #     # }
-        #     # $currentHeader = $sb.ToString()
-        
-        #     # Use Split to handle headers. This is simpler and more efficient.
-        #     $Hdrs = $firstLine.Split($Delimiter)
-        #     foreach ($Hdr in $Hdrs) {
-        #         # Add Header to $headers list removing any quotes
-        #         $headers.Add($Hdr.Trim('"'))
-        #     }
-        # }
-
-        # $headers.Add($currentHeader.Trim('"'))
-        # [void]$sb.Clear()
-        
-        # Log different messages based on whether headers are being used
-        # if ($FirstRowColumns) {
-        #     Write-Host "Detected $($headers.Count) column headers in CSV file."
-        # } else {
-        #     if ($SkipHeaderRow) {
-        #         Write-Host "CSV has $($headers.Count) columns. First row will be skipped (treated as headers)."
-        #     } else {
-        #         Write-Host "CSV has $($headers.Count) columns in first row."
-        #     }
-        # }
 
         # Get table columns to ensure proper mapping
         $schemaCommand = New-Object System.Data.SqlClient.SqlCommand(
@@ -508,10 +1072,13 @@ function Import-BulkInsert {
         [Parameter(Mandatory=$false)]
         [string]$SharedPath,  # Path accessible to both PowerShell and SQL Server
         [Parameter(Mandatory=$false)]
+        [PSCredential]$SMBCredential,
+        [Parameter(Mandatory=$false)]
         [switch]$HandleTrailingDelimiters
     )
     
-    # Determine a shared path location
+    # Check if running on Windows
+    if ($IsWindows) 
     if (-not $SharedPath) {
         # Try to use the same directory as the input file
         $SharedPath = [System.IO.Path]::GetDirectoryName($CsvFile)
@@ -548,177 +1115,40 @@ function Import-BulkInsert {
     $columnCount = $columnsTable.Rows.Count
     
     Write-Host "Found $columnCount columns in table $Table."
-    
-    # Create a temporary copy of the CSV with normalized delimiters if needed
-    $tempCsvFile = $CsvFile
-    if ($SkipHeaderRow -or $HandleTrailingDelimiters) {
-        $tempFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".csv"
-        $tempCsvFile = [System.IO.Path]::Combine($SharedPath, $tempFileName)
-        
-        $reader = [System.IO.File]::OpenText($CsvFile)
-        $writer = [System.IO.File]::CreateText($tempCsvFile)
-        
-        # Skip header if needed
-        if ($SkipHeaderRow) {
-            [void]$reader.ReadLine()
-            Write-Host "Skipping header row."
-        }
-        
-        # Process and write remaining content
-        $lineNum = 0
-        while ($null -ne ($line = $reader.ReadLine())) {
-            $lineNum++
-            
-            if ($HandleTrailingDelimiters) {
-                # Count delimiters in the line
-                $delimiterCount = ($line.ToCharArray() | Where-Object { $_ -eq $Delimiter[0] }).Count
-                
-                # Ensure we have the right number of delimiters (should be columnCount - 1)
-                # If too few delimiters, add them; if too many, remove them
-                if ($delimiterCount -lt ($columnCount - 1)) {
-                    # Add missing delimiters
-                    $line = $line + ($Delimiter * (($columnCount - 1) - $delimiterCount))
-                    Write-Verbose "Added delimiters to line $lineNum"
-                }
-                elseif ($delimiterCount -gt ($columnCount - 1)) {
-                    # Remove excess delimiters by parsing and taking only the columns we need
-                    $fields = @()
-                    $inQuotes = $false
-                    $sb = [System.Text.StringBuilder]::new()
-                    
-                    foreach ($char in $line.ToCharArray()) {
-                        if ($char -eq '"') {
-                            $inQuotes = !$inQuotes
-                            [void]$sb.Append($char)
-                        }
-                        elseif ($char -eq $Delimiter[0] -and !$inQuotes) {
-                            $fields += $sb.ToString()
-                            [void]$sb.Clear()
-                            
-                            # If we already have enough fields, stop processing
-                            if ($fields.Count -ge $columnCount) {
-                                break
-                            }
-                        }
-                        else {
-                            [void]$sb.Append($char)
-                        }
-                    }
-                    
-                    # Add the last field if needed
-                    if ($fields.Count -lt $columnCount) {
-                        $fields += $sb.ToString()
-                    }
-                    
-                    # Rebuild the line with the correct number of delimiters
-                    $line = $fields[0]
-                    for ($i = 1; $i -lt $columnCount; $i++) {
-                        if ($i -lt $fields.Count) {
-                            $line += "$Delimiter$($fields[$i])"
-                        }
-                        else {
-                            $line += "$Delimiter"
-                        }
-                    }
-                    
-                    Write-Verbose "Fixed excess delimiters in line $lineNum"
-                }
-            }
-            
-            $writer.WriteLine($line)
-            
-            # Show progress every 10,000 lines
-            if ($lineNum % 10000 -eq 0) {
-                Write-Host "Processed $lineNum lines..."
-            }
-        }
-        
-        $reader.Close()
-        $writer.Close()
-        Write-Host "Created preprocessed file with $lineNum lines: $tempCsvFile"
+
+    if ($isWindows) {
+        # Process CSV file to Windows share
+        Process_CsvToWindowsShare   -CsvFile $CsvFile `
+                                    -SharedPath $SharedPath `
+                                    -SkipHeaderRow $SkipHeaderRow `
+                                    -HandleTrailingDelimiters $HandleTrailingDelimiters `
+                                    -Delimiter $Delimiter `
+                                    -ColumnCount $columnCount
+
+        # Create format file and upload to Windows share
+        Create_winBcpFormatFile -SharedPath $SharedPath `
+                                -FormatFileName $FormatFileName `
+                                -Delimiter $Delimiter `
+                                -ColumnCount $columnCount                                                    
+    }
+    else {
+        # Process CSV file to Samba share
+        Process_CsvToSambaShare -CsvFile $CsvFile `
+                                -SambaShare $SharedPath `
+                                -SMBCredential $SMBCredential `
+                                -SkipHeaderRow $SkipHeaderRow `
+                                -HandleTrailingDelimiters $HandleTrailingDelimiters `
+                                -Delimiter $Delimiter `
+                                -ColumnCount $columnCount
+
+        # Create format file and upload to Samba share
+        Create_smbBcpFormatFile -SharedPath $SharedPath `
+                                -FormatFileName $FormatFileName `
+                                -Delimiter $Delimiter `
+                                -ColumnCount $columnCount
     }
     
-    # Create format file
-    $formatFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".fmt"
-    $formatFile = [System.IO.Path]::Combine($SharedPath, $formatFileName)
-    
-    # Create XML format file for better handling of edge cases
-    # Using MAX_LENGTH="8000" instead of "0" to fix the error
-    $formatContent = @"
-<?xml version="1.0"?>
-<BCPFORMAT xmlns="http://schemas.microsoft.com/sqlserver/2004/bulkload/format" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
- <RECORD>
-"@
-
-    # Add field definitions
-    for ($i = 0; $i -lt $columnCount; $i++) {
-        # Last field needs special handling for trailing delimiter issues
-        $terminator = if ($i -eq $columnCount - 1) { "\r\n" } else { $Delimiter }
-        
-        # Use 8000 as MAX_LENGTH instead of 0
-        $formatContent += @"
-  <FIELD ID="$($i+1)" xsi:type="CharTerm" TERMINATOR="$terminator" MAX_LENGTH="8000"/>
-"@
-    }
-
-    $formatContent += @"
- </RECORD>
- <ROW>
-"@
-
-    # Add column mappings
-    for ($i = 0; $i -lt $columnCount; $i++) {
-        $columnName = $columnsTable.Rows[$i]["COLUMN_NAME"]
-        $dataType = $columnsTable.Rows[$i]["DATA_TYPE"].ToString().ToUpper()
-        
-        # Map SQL data types to appropriate BCP format types
-        $xsiType = switch ($dataType) {
-            "INT" { "SQLINT" }
-            "BIGINT" { "SQLBIGINT" }
-            "SMALLINT" { "SQLSMALLINT" }
-            "TINYINT" { "SQLTINYINT" }
-            "BIT" { "SQLBIT" }
-            "DECIMAL" { "SQLDECIMAL" }
-            "NUMERIC" { "SQLNUMERIC" }
-            "MONEY" { "SQLMONEY" }
-            "SMALLMONEY" { "SQLSMALLMONEY" }
-            "FLOAT" { "SQLFLT8" }
-            "REAL" { "SQLFLT4" }
-            "DATETIME" { "SQLDATETIME" }
-            "DATETIME2" { "SQLDATETIME" }
-            "DATE" { "SQLDATE" }
-            "TIME" { "SQLTIME" }
-            "DATETIMEOFFSET" { "SQLDATETIMEOFFSET" }
-            "SMALLDATETIME" { "SQLSMALLDDATETIME" }
-            default { "SQLVARYCHAR" }  # Default to VARCHAR for text and other types
-        }
-        
-        $formatContent += @"
-  <COLUMN SOURCE="$($i+1)" NAME="$columnName" xsi:type="$xsiType"/>
-"@
-    }
-
-    $formatContent += @"
- </ROW>
-</BCPFORMAT>
-"@
-
-    # Write format file
-    [System.IO.File]::WriteAllText($formatFile, $formatContent)
-    Write-Host "Created format file: $formatFile"
-    
-    # Execute BULK INSERT
-    $bulkInsertSql = @"
-    BULK INSERT $Table
-    FROM '$tempCsvFile'
-    WITH (
-        FORMATFILE = '$formatFile',
-        FIRSTROW = 1,
-        TABLOCK,
-        MAXERRORS = 0
-    )
-"@
-    
+    # Build BULK INSERT command
     Write-Host "Executing SQL Command: $bulkInsertSql"
     $bulkCmd = New-Object System.Data.SqlClient.SqlCommand($bulkInsertSql, $connection)
     $bulkCmd.CommandTimeout = 600  # 10 minute timeout
