@@ -36,21 +36,21 @@ function Create_smbBcpFormatFile {
     $localFormatFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), $formatFileName)
     
     # Create XML format file content
-    $formatContent = @'
+    $formatContent = @"
 <?xml version="1.0"?>
 <BCPFORMAT xmlns="http://schemas.microsoft.com/sqlserver/2004/bulkload/format" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
  <RECORD>
-'@
+"@
 
     # Add field definitions
     for ($i = 0; $i -lt $ColumnCount; $i++) {
         # Last field needs special handling for trailing delimiter issues
-        $terminator = if ($i -eq $ColumnCount - 1) { "\r\n" } else { $Delimiter }
+        $terminator = if ($i -eq $ColumnCount - 1) { '\r\n' } else { $Delimiter }
         
         # Use 8000 as MAX_LENGTH instead of 0
-        $formatContent += @'
+        $formatContent += @"
   <FIELD ID="$($i+1)" xsi:type="CharTerm" TERMINATOR="$terminator" MAX_LENGTH="8000"/>
-'@
+"@
     }
 
     $formatContent += @'
