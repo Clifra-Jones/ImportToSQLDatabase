@@ -184,10 +184,7 @@ function Create_winBcpFormatFile {
         [System.Data.DataTable]$ColumnsTable,
         
         [Parameter(Mandatory = $false)]
-        [string]$Delimiter = ",",
-        
-        [Parameter(Mandatory = $false)]
-        [string]$Table
+        [string]$Delimiter = ","
     )
     
     # Create format file
@@ -259,24 +256,8 @@ function Create_winBcpFormatFile {
     [System.IO.File]::WriteAllText($formatFile, $formatContent)
     Write-Host "Created format file: $formatFile"
     
-    # Return the format file path or generate SQL command if Table is provided
-    if ($Table) {
-        # Return the BULK INSERT SQL command
-        $bulkInsertSql = @"
-BULK INSERT $Table
-FROM '$formatFile'
-WITH (
-    FORMATFILE = '$formatFile',
-    FIRSTROW = 1,
-    TABLOCK,
-    MAXERRORS = 0
-)
-"@
-        return $bulkInsertSql
-    } else {
-        # Just return the format file path
-        return $formatFile
-    }
+    # Return the format file path
+    return $formatFile
 }
 
 # Example usage:
@@ -1125,43 +1106,56 @@ function Import-BulkInsert {
             Delimiter = $Delimiter
             ColumnCount = $columnCount
         }
-        Process_CsvToWindowsShare  @Process_CsvToWindowsShareParams
+        $tempCsvFile = Process_CsvToWindowsShare  @Process_CsvToWindowsShareParams
 
         # Create format file and upload to Windows share.
         $Create_WinBcpFormatFileParams = @{
             SharedPath = $SharedPath
-            Table = "$Table.fmt"
             Delimiter = $Delimiter
             ColumnCount = $columnCount
             ColumnsTable = $columnsTable
         }
-        Create_winBcpFormatFile @Create_WinBcpFormatFileParams                                                    
+        $formatFile = Create_winBcpFormatFile @Create_WinBcpFormatFileParams                                                    
     }
     else {
         # Process CSV file to Samba share
-        Process_CsvToSambaShareParams = @{
+        $Process_CsvToSambaShareParams = @{
             CsvFile = $CsvFile
-            SharedPath = $SharedPath
+            SambaShare = $SharedPath
             SkipHeaderRow = $SkipHeaderRow
             HandleTrailingDelimiters = $HandleTrailingDelimiters
             Delimiter = $Delimiter
             ColumnCount = $columnCount
             SMBCredential = $SMBCredential
         }
-        Process_CsvToSambaShare @Process_CsvToSambaShareParams
+        $tempCsvFile = Process_CsvToSambaShare @Process_CsvToSambaShareParams
 
         # Create format file and upload to Samba share
-        Create_smbBcpFormatFileParams = @{
-            SharedPath = $SharedPath
-            FormatFileName = "$Table.fmt"
-            Delimiter = $Delimiter
+        $Create_smbBcpFormatFileParams = @{
+            SambaShare = $SharedPath
+            Credentials = $SMBCredential
             ColumnCount = $columnCount
+            ColumnsTable = $columnsTable
+            Delimiter = $Delimiter
         }
-        Create_smbBcpFormatFile @Create_smbBcpFormatFileParams
+        $formatFile = Create_smbBcpFormatFile @Create_smbBcpFormatFileParams
     }
     
     # Build BULK INSERT command
+
+    $bulkInsertSql = @"
+BULK INSERT $Table
+FROM '$tempCsvFile'
+WITH (
+    FORMATFILE = '$formatFile',
+    FIRSTROW = 1,
+    TABLOCK,
+    MAXERRORS = 0
+)
+"@
+
     Write-Host "Executing SQL Command: $bulkInsertSql"
+    
     $bulkCmd = New-Object System.Data.SqlClient.SqlCommand($bulkInsertSql, $connection)
     $bulkCmd.CommandTimeout = 600  # 10 minute timeout
     
