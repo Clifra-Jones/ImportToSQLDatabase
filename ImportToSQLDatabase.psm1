@@ -1077,6 +1077,9 @@ function Import-BulkInsert {
     $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
     $connection.Open()
     
+    # Set the stopwatch
+    $Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
     # Truncate if requested
     if ($Truncate) {
         $truncateCmd = New-Object System.Data.SqlClient.SqlCommand("TRUNCATE TABLE $Table", $connection)
@@ -1095,7 +1098,7 @@ function Import-BulkInsert {
     $columnCount = $columnsTable.Rows.Count
     
     Write-Host "Found $columnCount columns in table $Table."
-
+    
     if ($isWindows) {
          # Process CSV file to Windows share
          $Process_CsvToWindowsShareParams = @{
@@ -1183,6 +1186,11 @@ WITH (
         $connection.Close()
         Write-Host "Database connection closed."
     }
+    $Stopwatch.stop()
+    $elapsedTime = $Stopwatch.Elapsed
+    
+    Write-Host "File Processed and inserted data in: $($elapsedTime.TotalSeconds)" 
+
     <#
     .SYNOPSIS
     Imports data from a delimited file into a SQL Server table using BULK INSERT.
