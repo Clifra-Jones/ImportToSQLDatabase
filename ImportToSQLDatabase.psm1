@@ -36,24 +36,24 @@ function Create_smbBcpFormatFile {
     $localFormatFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), $formatFileName)
     
     # Create XML format file content
-    $formatContent = @"
+    $formatContent = @'
 <?xml version="1.0"?>
 <BCPFORMAT xmlns="http://schemas.microsoft.com/sqlserver/2004/bulkload/format" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
  <RECORD>
-"@
+'@
 
     # Add field definitions
     for ($i = 0; $i -lt $ColumnCount; $i++) {
         # Last field needs special handling for trailing delimiter issues
         $terminator = if ($i -eq $ColumnCount - 1) { '\r\n' } else { $Delimiter }
         
-        # Use 8000 as MAX_LENGTH instead of 0
-        $formatContent += @"
-  <FIELD ID="$($i+1)" xsi:type="CharTerm" TERMINATOR="$terminator" MAX_LENGTH="8000"/>
-"@
+        # Append field definition with proper quoting
+        $formatContent += "  <FIELD ID=`"$($i+1)`" xsi:type=`"CharTerm`" TERMINATOR=`"$terminator`" MAX_LENGTH=`"8000`"/>"
     }
 
+    # Add row section
     $formatContent += @'
+
  </RECORD>
  <ROW>
 '@
@@ -85,12 +85,13 @@ function Create_smbBcpFormatFile {
             default { "SQLVARYCHAR" }  # Default to VARCHAR for text and other types
         }
         
-        $formatContent += @"
-  <COLUMN SOURCE=""$($i+1)"" NAME=""$columnName"" xsi:type=""$xsiType""/>
-"@
+        # Append column mapping with proper quoting
+        $formatContent += "  <COLUMN SOURCE=`"$($i+1)`" NAME=`"$columnName`" xsi:type=`"$xsiType`"/>"
     }
 
+    # Close XML
     $formatContent += @'
+
  </ROW>
 </BCPFORMAT>
 '@
@@ -101,7 +102,7 @@ function Create_smbBcpFormatFile {
     
     # Handle domain usernames (DOMAIN\Username format)
     if ($SMBCredential) {
-        $Username = $SMBCredentials.UserName
+        $Username = $SMBCredential.UserName
         $PW = $Credentials.GetNetworkCredential().Password
         $formattedUsername = $Username
         if ($Username -match '\\') {
@@ -184,15 +185,17 @@ function Create_winBcpFormatFile {
         [System.Data.DataTable]$ColumnsTable,
         
         [Parameter(Mandatory = $false)]
-        [string]$Delimiter = ","
+        [string]$Delimiter = ",",
+        
+        [Parameter(Mandatory = $false)]
+        [string]$Table
     )
     
     # Create format file
     $formatFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".fmt"
     $formatFile = [System.IO.Path]::Combine($SharedPath, $formatFileName)
     
-    # Create XML format file for better handling of edge cases
-    # Using MAX_LENGTH="8000" instead of "0" to fix the error
+    # Create XML format file content header
     $formatContent = @'
 <?xml version="1.0"?>
 <BCPFORMAT xmlns="http://schemas.microsoft.com/sqlserver/2004/bulkload/format" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
@@ -204,13 +207,13 @@ function Create_winBcpFormatFile {
         # Last field needs special handling for trailing delimiter issues
         $terminator = if ($i -eq $ColumnCount - 1) { "\r\n" } else { $Delimiter }
         
-        # Use 8000 as MAX_LENGTH instead of 0
-        $formatContent += @"
-  <FIELD ID=""$($i+1)"" xsi:type=""CharTerm"" TERMINATOR=""$terminator"" MAX_LENGTH=""8000""/>
-"@
+        # Append field definition with proper quoting
+        $formatContent += "  <FIELD ID=`"$($i+1)`" xsi:type=`"CharTerm`" TERMINATOR=`"$terminator`" MAX_LENGTH=`"8000`"/>"
     }
 
+    # Add row section
     $formatContent += @'
+
  </RECORD>
  <ROW>
 '@
@@ -242,12 +245,13 @@ function Create_winBcpFormatFile {
             default { "SQLVARYCHAR" }  # Default to VARCHAR for text and other types
         }
         
-        $formatContent += @"
-  <COLUMN SOURCE=""$($i+1)"" NAME=""$columnName"" xsi:type=""$xsiType""/>
-"@
+        # Append column mapping with proper quoting
+        $formatContent += "  <COLUMN SOURCE=`"$($i+1)`" NAME=`"$columnName`" xsi:type=`"$xsiType`"/>"
     }
 
+    # Close XML
     $formatContent += @'
+
  </ROW>
 </BCPFORMAT>
 '@
