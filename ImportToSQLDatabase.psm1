@@ -1133,6 +1133,7 @@ function Import-BulkInsert {
             Table = "$Table.fmt"
             Delimiter = $Delimiter
             ColumnCount = $columnCount
+            ColumnsTable = $columnsTable
         }
         Create_winBcpFormatFile @Create_WinBcpFormatFileParams                                                    
     }
