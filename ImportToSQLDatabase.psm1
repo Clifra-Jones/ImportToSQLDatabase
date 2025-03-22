@@ -1130,7 +1130,7 @@ function Import-BulkInsert {
         # Create format file and upload to Windows share
         $Create_WinBcpFormatFileParams = @{
             SharedPath = $SharedPath
-            FormatFileName = "$Table.fmt"
+            Table = "$Table.fmt"
             Delimiter = $Delimiter
             ColumnCount = $columnCount
         }
