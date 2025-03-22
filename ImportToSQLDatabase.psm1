@@ -495,14 +495,14 @@ function Process_CsvToWindowsShare {
     Write-Host "Processing CSV file: $CsvFile"
     Write-Host "Target Windows share: $SharedPath"
     
-    # Determine if we need to preprocess the file
-    $tempCsvFile = $CsvFile
+    # Create a local temporary file
+    $tempFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".csv"
+    $localTempFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), $tempFileName)
+    
+    # Process the file locally
     if ($SkipHeaderRow -or $HandleTrailingDelimiters) {
-        $tempFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".csv"
-        $tempCsvFile = [System.IO.Path]::Combine($SharedPath, $tempFileName)
-        
         $reader = [System.IO.File]::OpenText($CsvFile)
-        $writer = [System.IO.File]::CreateText($tempCsvFile)
+        $writer = [System.IO.File]::CreateText($localTempFile)
         
         # Skip header if needed
         if ($SkipHeaderRow) {
@@ -581,17 +581,29 @@ function Process_CsvToWindowsShare {
         
         $reader.Close()
         $writer.Close()
-        Write-Host "Created preprocessed file with $lineNum lines: $tempCsvFile"
-        
-        # Return the path to the processed file
-        return $tempCsvFile
+        Write-Host "Created preprocessed file with $lineNum lines: $localTempFile"
     }
     else {
-        # If no processing was needed, copy the file to the shared path
-        $destFile = [System.IO.Path]::Combine($SharedPath, [System.IO.Path]::GetFileName($CsvFile))
-        Copy-Item -Path $CsvFile -Destination $destFile -Force
+        # If no processing needed, just copy the file locally
+        Copy-Item -Path $CsvFile -Destination $localTempFile -Force
+        Write-Host "Created local copy of the file: $localTempFile"
+    }
+    
+    # Now copy the file to the shared path
+    $destFile = [System.IO.Path]::Combine($SharedPath, [System.IO.Path]::GetFileName($tempFileName))
+    try {
+        Copy-Item -Path $localTempFile -Destination $destFile -Force
         Write-Host "Copied file to shared path: $destFile"
+        
+        # Clean up the local temporary file
+        Remove-Item -Path $localTempFile -Force
+        Write-Host "Cleaned up local temporary file"
+        
         return $destFile
+    }
+    catch {
+        Write-Error "Failed to copy file to shared path: $_"
+        return $null
     }
 }
 
