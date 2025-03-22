@@ -1116,35 +1116,47 @@ function Import-BulkInsert {
     Write-Host "Found $columnCount columns in table $Table."
 
     if ($isWindows) {
-        # Process CSV file to Windows share
-        Process_CsvToWindowsShare   -CsvFile $CsvFile `
-                                    -SharedPath $SharedPath `
-                                    -SkipHeaderRow $SkipHeaderRow `
-                                    -HandleTrailingDelimiters $HandleTrailingDelimiters `
-                                    -Delimiter $Delimiter `
-                                    -ColumnCount $columnCount
+         # Process CSV file to Windows share
+         $Process_CsvToWindowsShareParams = @{
+            CsvFile = $CsvFile
+            SharedPath = $SharedPath
+            SkipHeaderRow = $SkipHeaderRow
+            HandleTrailingDelimiters = $HandleTrailingDelimiters
+            Delimiter = $Delimiter
+            ColumnCount = $columnCount
+        }
+        Process_CsvToWindowsShare  @Process_CsvToWindowsShareParams
 
         # Create format file and upload to Windows share
-        Create_winBcpFormatFile -SharedPath $SharedPath `
-                                -FormatFileName $FormatFileName `
-                                -Delimiter $Delimiter `
-                                -ColumnCount $columnCount                                                    
+        $Create_WinBcpFormatFileParams = @{
+            SharedPath = $SharedPath
+            FormatFileName = "$Table.fmt"
+            Delimiter = $Delimiter
+            ColumnCount = $columnCount
+        }
+        Create_winBcpFormatFile @Create_WinBcpFormatFileParams                                                    
     }
     else {
         # Process CSV file to Samba share
-        Process_CsvToSambaShare -CsvFile $CsvFile `
-                                -SambaShare $SharedPath `
-                                -SMBCredential $SMBCredential `
-                                -SkipHeaderRow $SkipHeaderRow `
-                                -HandleTrailingDelimiters $HandleTrailingDelimiters `
-                                -Delimiter $Delimiter `
-                                -ColumnCount $columnCount
+        Process_CsvToSambaShareParams = @{
+            CsvFile = $CsvFile
+            SharedPath = $SharedPath
+            SkipHeaderRow = $SkipHeaderRow
+            HandleTrailingDelimiters = $HandleTrailingDelimiters
+            Delimiter = $Delimiter
+            ColumnCount = $columnCount
+            SMBCredential = $SMBCredential
+        }
+        Process_CsvToSambaShare @Process_CsvToSambaShareParams
 
         # Create format file and upload to Samba share
-        Create_smbBcpFormatFile -SharedPath $SharedPath `
-                                -FormatFileName $FormatFileName `
-                                -Delimiter $Delimiter `
-                                -ColumnCount $columnCount
+        Create_smbBcpFormatFileParams = @{
+            SharedPath = $SharedPath
+            FormatFileName = "$Table.fmt"
+            Delimiter = $Delimiter
+            ColumnCount = $columnCount
+        }
+        Create_smbBcpFormatFile @Create_smbBcpFormatFileParams
     }
     
     # Build BULK INSERT command
