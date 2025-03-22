@@ -1171,6 +1171,7 @@ WITH (
         if ($_.Exception.InnerException) {
             Write-Host "Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
         }
+        throw
     }
     finally {
         # Clean up temp files
