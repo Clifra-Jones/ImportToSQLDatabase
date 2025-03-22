@@ -1127,7 +1127,7 @@ function Import-BulkInsert {
         }
         Process_CsvToWindowsShare  @Process_CsvToWindowsShareParams
 
-        # Create format file and upload to Windows share
+        # Create format file and upload to Windows share.
         $Create_WinBcpFormatFileParams = @{
             SharedPath = $SharedPath
             Table = "$Table.fmt"
