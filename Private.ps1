@@ -137,23 +137,23 @@ function Process_CsvToSharedPath {
             Write-Host "Skipping header row."
             $Lines--
         }
-        
+
+        # Later we are determining which progress indicator to use
+        # the text based progress indicator is only available if you
+        # have the MOA_MOdule available. we will check for that now.
+        If ($ShowProgress -and $env:ShowProgress -eq 'text') {
+            If (Get-Module -ListAvailable -name Moa_Module) {
+                Import-Module MOA_Module
+            } else {
+                Write-Host "Moa_Module not available, reverting to standard progress indicator."
+                $env:ShowProgress = 'ps'
+            }
+        }
+                    
         # Process and write remaining content
         $lineNum = 0
         while ($null -ne ($line = $reader.ReadLine())) {
 
-            # Later we are determining which progress indicator to use
-            # the text based progress indicator is only available if you
-            # have the MOA_MOdule available. we will check for that now.
-            If ($ShowProgress -and $env:ShowProgress -eq 'text') {
-                If (Get-Module -ListAvailable -name Moa_Module) {
-                    Import-Module MOA_Module
-                } else {
-                    Write-Host "Moa_Module not available, reverting to standard progress indicator."
-                    $env:ShowProgress = 'ps'
-                }
-            }
-            
             $lineNum++
             
             if ($HandleTrailingDelimiters -and $ColumnCount -gt 0) {
@@ -235,8 +235,9 @@ function Process_CsvToSharedPath {
             #
 
             if ($ShowProgress) {
-                If ($env:ShowProgress -eq 'text') {                    
-                    Show-Progress -Activity "Processing file ..." -Status "Line: $lineNum of $Lines"
+                If ($env:ShowProgress -eq 'text') {       
+                    $PercentComplete = $lineNum / $Lines * 100             
+                    Show-ProgressBar -Activity "Processing file ..." -PercentComplete $PercentComplete -Status "Line: $lineNum of $Lines" 
                 } elseif ($env:ShowProgress -eq 'ps') {
                     Write-Progress -Activity "Processing file..." -Status "Line: $lineNum of $Lines"
                 } else {
@@ -248,6 +249,13 @@ function Process_CsvToSharedPath {
             }
         }
         
+        If ($ShowProgress) {
+            If ($env:ShowProgress -eq 'text') {
+                Show-ProgressBar -Completed
+            } elseif ($env:ShowProgress = 'ps') {
+                Write-Progress -Completed
+            }
+        }
         $reader.Close()
         $writer.Close()
         Write-Host "Created preprocessed file with $lineNum lines: $tempCsvFile"
