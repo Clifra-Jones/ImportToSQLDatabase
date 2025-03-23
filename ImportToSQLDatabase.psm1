@@ -1,5 +1,8 @@
 using namespace System.Collections.Generic
 using namespace Microsoft.VisualBasic.FileIO
+
+. "$PSScriptRoot\Private.ps1"
+
 function Import-ToSqlDatabase {
     [CmdletBinding()]
     param(
@@ -435,448 +438,6 @@ function Import-ToSqlDatabase {
     #>
 }
 
-function Invoke-CsvToSharedPath {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$CsvFile,
-        
-        [Parameter(Mandatory = $true)]
-        [string]$SharedPath,
-        
-        [Parameter(Mandatory = $false)]
-        [System.Management.Automation.PSCredential]$Credentials,
-        
-        [Parameter(Mandatory = $false)]
-        [switch]$SkipHeaderRow,
-        
-        [Parameter(Mandatory = $false)]
-        [switch]$HandleTrailingDelimiters,
-        
-        [Parameter(Mandatory = $false)]
-        [string]$Delimiter = ",",
-        
-        [Parameter(Mandatory = $false)]
-        [int]$ColumnCount = 0
-    )
-    
-    Write-Host "Processing CSV file: $CsvFile"
-    Write-Host "Target shared path: $SharedPath"
-    
-    # Determine if this is a network path (SMB/CIFS)
-    $isNetworkPath = $SharedPath -match '^(\\\\|//)'
-    $useSmb = $isNetworkPath -and $isLinux
-    
-    if ($useSmb) {
-        # Parse Samba share information
-        if ($SharedPath -match "//([^/]+)/([^/]+)(?:/(.*))?") {
-            $Server = $matches[1]
-            $Share = $matches[2]
-            $RemotePath = if ($matches[3]) { $matches[3] } else { "" }
-            
-            Write-Host "Detected Samba share. Server: $Server, Share: $Share, Path: $RemotePath"
-        } else {
-            Write-Error "Invalid Samba share format. Expected //server/share/path"
-            return $null
-        }
-    }
-    
-    # Determine if we need to preprocess the file
-    $needsPreprocessing = $SkipHeaderRow -or ($HandleTrailingDelimiters -and $ColumnCount -gt 0)
-    
-    if ($needsPreprocessing) {
-        # Create a temporary file for the preprocessed data
-        if ($useSmb) {
-            # For SMB, create temp file locally
-            $tempFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".csv"
-            $tempCsvFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), $tempFileName)
-        } else {
-            # For local or Windows share, create in the shared path
-            $tempFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".csv"
-            $tempCsvFile = [System.IO.Path]::Combine($SharedPath, $tempFileName)
-        }
-        
-        Write-Host "Creating preprocessed file: $tempCsvFile"
-        
-        $reader = [System.IO.File]::OpenText($CsvFile)
-        $writer = [System.IO.File]::CreateText($tempCsvFile)
-        
-        # Skip header if needed
-        if ($SkipHeaderRow) {
-            [void]$reader.ReadLine()
-            Write-Host "Skipping header row."
-        }
-        
-        # Process and write remaining content
-        $lineNum = 0
-        while ($null -ne ($line = $reader.ReadLine())) {
-            $lineNum++
-            
-            if ($HandleTrailingDelimiters -and $ColumnCount -gt 0) {
-                # Count delimiters in the line
-                $delimiterCount = ($line.ToCharArray() | Where-Object { $_ -eq $Delimiter[0] }).Count
-                
-                # Ensure we have the right number of delimiters (should be columnCount - 1)
-                # If too few delimiters, add them; if too many, remove them
-                if ($delimiterCount -lt ($ColumnCount - 1)) {
-                    # Add missing delimiters
-                    $line = $line + ($Delimiter * (($ColumnCount - 1) - $delimiterCount))
-                    Write-Verbose "Added delimiters to line $lineNum"
-                }
-                elseif ($delimiterCount -gt ($ColumnCount - 1)) {
-                    # Remove excess delimiters by parsing and taking only the columns we need
-                    $fields = @()
-                    $inQuotes = $false
-                    $sb = [System.Text.StringBuilder]::new()
-                    
-                    foreach ($char in $line.ToCharArray()) {
-                        if ($char -eq '"') {
-                            $inQuotes = !$inQuotes
-                            [void]$sb.Append($char)
-                        }
-                        elseif ($char -eq $Delimiter[0] -and !$inQuotes) {
-                            $fields += $sb.ToString()
-                            [void]$sb.Clear()
-                            
-                            # If we already have enough fields, stop processing
-                            if ($fields.Count -ge $ColumnCount) {
-                                break
-                            }
-                        }
-                        else {
-                            [void]$sb.Append($char)
-                        }
-                    }
-                    
-                    # Add the last field if needed
-                    if ($fields.Count -lt $ColumnCount) {
-                        $fields += $sb.ToString()
-                    }
-                    
-                    # Rebuild the line with the correct number of delimiters
-                    $line = $fields[0]
-                    for ($i = 1; $i -lt $ColumnCount; $i++) {
-                        if ($i -lt $fields.Count) {
-                            $line += "$Delimiter$($fields[$i])"
-                        }
-                        else {
-                            $line += "$Delimiter"
-                        }
-                    }
-                    
-                    Write-Verbose "Fixed excess delimiters in line $lineNum"
-                }
-            }
-            
-            $writer.WriteLine($line)
-            
-            # Show progress every 10,000 lines
-            if ($lineNum % 10000 -eq 0) {
-                Write-Host "Processed $lineNum lines..."
-            }
-        }
-        
-        $reader.Close()
-        $writer.Close()
-        Write-Host "Created preprocessed file with $lineNum lines: $tempCsvFile"
-        
-        # Determine destination file name
-        $destFileName = $tempFileName
-    } else {
-        # If no preprocessing needed, just use the original file
-        $tempCsvFile = $CsvFile
-        $destFileName = [System.IO.Path]::GetFileName($CsvFile)
-    }
-    
-    # Handle the file transfer or copying based on path type
-    if ($useSmb) {
-        # Upload to Samba share using smbclient
-        Write-Host "Uploading file to Samba share..."
-        
-        # Handle domain usernames (DOMAIN\Username format)
-        if ($Credentials) {
-            $Username = $Credentials.UserName
-            $Password = $Credentials.GetNetworkCredential().Password
-            $formattedUsername = $Username
-            if ($Username -match '\\') {
-                # Escape the backslash for smbclient
-                $formattedUsername = $Username -replace '\\', '\\\\'
-            }
-        }
-        
-        # Create smbclient command
-        $smbCommand = "put `"$tempCsvFile`" `"$destFileName`""
-        if (![string]::IsNullOrEmpty($RemotePath)) {
-            $smbCommand = "cd `"$RemotePath`"; $smbCommand"
-        }
-        
-        # Execute smbclient command
-        $smbClientPath = "smbclient" # Assumes smbclient is in PATH
-        
-        if ($Credentials) {
-            $smbArguments = @(
-                "//$Server/$Share",
-                "-U", "$formattedUsername%$Password",
-                "-c", $smbCommand
-            )
-        } else {
-            $smbArguments = @(
-                "//$Server/$Share",
-                "-c", $smbCommand
-            )
-        }
-        
-        try {
-            $process = Start-Process -FilePath $smbClientPath -ArgumentList $smbArguments -NoNewWindow -Wait -PassThru
-            
-            if ($process.ExitCode -eq 0) {
-                $remotePath = if ($RemotePath) { "$RemotePath/$destFileName" } else { $destFileName }
-                Write-Host "Successfully uploaded file to //$Server/$Share/$remotePath"
-                
-                # Clean up temp file if we created one
-                if ($needsPreprocessing) {
-                    Remove-Item -Path $tempCsvFile -Force
-                    Write-Host "Cleaned up temporary file"
-                }
-                
-                # Return the full path to the file
-                return "//$Server/$Share/$remotePath"
-            } else {
-                Write-Error "Failed to upload to Samba share. Exit code: $($process.ExitCode)"
-                return $null
-            }
-        } catch {
-            Write-Error "Error executing smbclient: $_"
-            return $null
-        }
-    } else {
-        # Local or Windows network path
-        if ($needsPreprocessing) {
-            # File is already in the right place, just return the path
-            return $tempCsvFile
-        } else {
-            # Copy the file to the shared path
-            $destFile = [System.IO.Path]::Combine($SharedPath, $destFileName)
-            Copy-Item -Path $CsvFile -Destination $destFile -Force
-            Write-Host "Copied file to shared path: $destFile"
-            return $destFile
-        }
-    }
-}
-# [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSUseApprovedVerbs", "PSUseApprovedVerbs:Use approved verbs for cmdlets")]
-
-function Create-BcpFormatFile {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$SharedPath,
-        
-        [Parameter(Mandatory = $false)]
-        [System.Management.Automation.PSCredential]$Credentials,
-        
-        [Parameter(Mandatory = $true)]
-        [int]$ColumnCount,
-        
-        [Parameter(Mandatory = $true)]
-        [System.Data.DataTable]$ColumnsTable,
-        
-        [Parameter(Mandatory = $false)]
-        [string]$Delimiter = ",",
-        
-        [Parameter(Mandatory = $false)]
-        [string]$Table
-    )
-    
-    # Determine if this is a network path (SMB/CIFS)
-    $isNetworkPath = $SharedPath -match '^(\\\\|//)'
-    $isLinux = $PSVersionTable.Platform -eq 'Unix' -or $IsLinux
-    $useSmb = $isNetworkPath -and $isLinux
-    
-    # Create format file
-    $formatFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".fmt"
-    
-    if ($useSmb) {
-        # For SMB on Linux, create locally first
-        $localFormatFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), $formatFileName)
-        
-        # Parse Samba share information
-        if ($SharedPath -match "//([^/]+)/([^/]+)(?:/(.*))?") {
-            $Server = $matches[1]
-            $Share = $matches[2]
-            $RemotePath = if ($matches[3]) { $matches[3] } else { "" }
-            
-            Write-Host "Detected Samba share. Server: $Server, Share: $Share, Path: $RemotePath"
-        } else {
-            Write-Error "Invalid Samba share format. Expected //server/share/path"
-            return $null
-        }
-    } else {
-        # For local or Windows network paths
-        $localFormatFile = [System.IO.Path]::Combine($SharedPath, $formatFileName)
-    }
-    
-    # Create XML format file content
-    $formatContent = @'
-<?xml version="1.0"?>
-<BCPFORMAT xmlns="http://schemas.microsoft.com/sqlserver/2004/bulkload/format" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
- <RECORD>
-'@
-
-    # Add field definitions with proper delimiter handling
-    for ($i = 0; $i -lt $ColumnCount; $i++) {
-        # Last field needs special handling for trailing delimiter issues
-        $terminator = if ($i -eq $ColumnCount - 1) { "\r\n" } else { $Delimiter }
-        
-        # Ensure proper escaping for special characters in the format file XML
-        $escapedTerminator = $terminator
-        if ($terminator -eq ",") { $escapedTerminator = "," }
-        if ($terminator -eq "|") { $escapedTerminator = "|" }
-        if ($terminator -eq "\t") { $escapedTerminator = "\\t" }
-        
-        # Use 8000 as MAX_LENGTH instead of 0, add QUOTING for all delimiters
-        $formatContent += @"
-  <FIELD ID="$($i+1)" xsi:type="CharTerm" TERMINATOR="$escapedTerminator" MAX_LENGTH="8000" QUOTING="OPTIONAL"/>
-"@
-    }
-
-    $formatContent += @'
- </RECORD>
- <ROW>
-'@
-
-    # Add column mappings
-    for ($i = 0; $i -lt $ColumnCount; $i++) {
-        $columnName = $ColumnsTable.Rows[$i]["COLUMN_NAME"]
-        $dataType = $ColumnsTable.Rows[$i]["DATA_TYPE"].ToString().ToUpper()
-        
-        # Map SQL data types to appropriate BCP format types
-        $xsiType = switch ($dataType) {
-            "INT" { "SQLINT" }
-            "BIGINT" { "SQLBIGINT" }
-            "SMALLINT" { "SQLSMALLINT" }
-            "TINYINT" { "SQLTINYINT" }
-            "BIT" { "SQLBIT" }
-            "DECIMAL" { "SQLDECIMAL" }
-            "NUMERIC" { "SQLNUMERIC" }
-            "MONEY" { "SQLMONEY" }
-            "SMALLMONEY" { "SQLSMALLMONEY" }
-            "FLOAT" { "SQLFLT8" }
-            "REAL" { "SQLFLT4" }
-            "DATETIME" { "SQLDATETIME" }
-            "DATETIME2" { "SQLDATETIME" }
-            "DATE" { "SQLDATE" }
-            "TIME" { "SQLTIME" }
-            "DATETIMEOFFSET" { "SQLDATETIMEOFFSET" }
-            "SMALLDATETIME" { "SQLSMALLDDATETIME" }
-            default { "SQLVARYCHAR" }  # Default to VARCHAR for text and other types
-        }
-        
-        $formatContent += @"
-  <COLUMN SOURCE="$($i+1)" NAME="$columnName" xsi:type="$xsiType"/>
-"@
-    }
-
-    $formatContent += @'
- </ROW>
-</BCPFORMAT>
-'@
-
-    # Write format file locally
-    [System.IO.File]::WriteAllText($localFormatFile, $formatContent)
-    Write-Host "Created format file: $localFormatFile"
-    
-    # For diagnostics, print the first few and last few fields in the format file
-    Write-Host "Format file preview (first 3 fields):"
-    $formatLines = $formatContent -split "`n"
-    $fieldLines = $formatLines | Where-Object { $_ -match '<FIELD ID=' }
-    $fieldLines | Select-Object -First 3 | ForEach-Object { Write-Host "  $_" }
-    
-    Write-Host "Format file (last 3 fields):"
-    $fieldLines | Select-Object -Last 3 | ForEach-Object { Write-Host "  $_" }
-    
-    # For SMB paths on Linux, upload the file
-    if ($useSmb) {
-        # Handle domain usernames (DOMAIN\Username format)
-        if ($Credentials) {
-            $Username = $Credentials.UserName
-            $Password = $Credentials.GetNetworkCredential().Password
-            $formattedUsername = $Username
-            if ($Username -match '\\') {
-                # Escape the backslash for smbclient
-                $formattedUsername = $Username -replace '\\', '\\\\'
-            }
-        }
-        
-        # Create smbclient command
-        $smbCommand = "put `"$localFormatFile`" `"$formatFileName`""
-        if (![string]::IsNullOrEmpty($RemotePath)) {
-            $smbCommand = "cd `"$RemotePath`"; $smbCommand"
-        }
-        
-        # Execute smbclient command
-        Write-Host "Uploading format file to Samba share..."
-        $smbClientPath = "smbclient" # Assumes smbclient is in PATH
-        
-        if ($Credentials) {
-            $smbArguments = @(
-                "//$Server/$Share",
-                "-U", "$formattedUsername%$Password",
-                "-c", $smbCommand
-            )
-        } else {
-            $smbArguments = @(
-                "//$Server/$Share", 
-                "-c", $smbCommand
-            )
-        }
-        
-        try {
-            $process = Start-Process -FilePath $smbClientPath -ArgumentList $smbArguments -NoNewWindow -Wait -PassThru
-            
-            if ($process.ExitCode -eq 0) {
-                $remotePath = if ($RemotePath) { "$RemotePath/$formatFileName" } else { $formatFileName }
-                Write-Host "Successfully uploaded format file to //$Server/$Share/$remotePath"
-                
-                # Clean up local temp file
-                Remove-Item -Path $localFormatFile -Force
-                Write-Host "Cleaned up local temporary format file"
-                
-                $formatFile = "//$Server/$Share/$remotePath"
-            } else {
-                Write-Error "Failed to upload format file to Samba share. Exit code: $($process.ExitCode)"
-                return $null
-            }
-        } catch {
-            Write-Error "Error executing smbclient: $_"
-            return $null
-        }
-    } else {
-        # For local or Windows network paths, the file is already in place
-        $formatFile = $localFormatFile
-    }
-    
-    # Return the BULK INSERT SQL command if Table is provided, otherwise just the format file path
-    if ($Table) {
-        # Return the BULK INSERT SQL command
-        $bulkInsertSql = @"
-BULK INSERT $Table
-FROM '$csvPath'
-WITH (
-    FORMATFILE = '$formatFile',
-    FIRSTROW = 1,
-    TABLOCK,
-    MAXERRORS = 0
-)
-"@
-        return @{
-            FormatFile = $formatFile
-            BulkInsertCommand = $bulkInsertSql
-        }
-    } else {
-        # Just return the format file path
-        return $formatFile
-    }
-}
 
 function Import-BulkInsert {
     [CmdletBinding()]
@@ -894,7 +455,7 @@ function Import-BulkInsert {
         [string]$Table,
         
         [Parameter(Mandatory=$false)]
-        [string]$Delimiter = "|",  # Default to pipe delimiter but supports other delimiters like comma
+        [string]$Delimiter = "|",
         
         [Parameter(Mandatory=$false)]
         [switch]$SkipHeaderRow,
@@ -906,10 +467,10 @@ function Import-BulkInsert {
         [System.Management.Automation.PSCredential]$SqlCredential,
         
         [Parameter(Mandatory=$false)]
-        [string]$SharedPath,  # Path accessible to both PowerShell and SQL Server
+        [string]$SharedPath,
         
         [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credentials,  # Credentials for network access
+        [System.Management.Automation.PSCredential]$Credentials,
         
         [Parameter(Mandatory=$false)]
         [switch]$HandleTrailingDelimiters,
@@ -917,6 +478,9 @@ function Import-BulkInsert {
         [Parameter(Mandatory=$false)]
         [int]$CommandTimeout = 600
     )
+    
+    # Determine if this is a cross-platform scenario
+    # $isLinux = $PSVersionTable.Platform -eq 'Unix' -or $IsLinux
     
     # Determine a shared path location if not provided
     if (-not $SharedPath) {
@@ -934,65 +498,68 @@ function Import-BulkInsert {
         $connectionString = "Server=$SqlServer;Database=$Database;Integrated Security=True;"
     }
     
-    $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
-    $connection.Open()
-    
-    # Truncate if requested
-    if ($Truncate) {
-        $truncateCmd = New-Object System.Data.SqlClient.SqlCommand("TRUNCATE TABLE $Table", $connection)
-        $truncateCmd.ExecuteNonQuery() | Out-Null
-        Write-Host "Table truncated."
-    }
-    
-    # Get column info
-    $columnsCmd = New-Object System.Data.SqlClient.SqlCommand(
-        "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '$Table' ORDER BY ORDINAL_POSITION", 
-        $connection
-    )
-    $columnsAdapter = New-Object System.Data.SqlClient.SqlDataAdapter($columnsCmd)
-    $columnsTable = New-Object System.Data.DataTable
-    $columnsAdapter.Fill($columnsTable) | Out-Null
-    $columnCount = $columnsTable.Rows.Count
-    
-    Write-Host "Found $columnCount columns in table $Table."
-    
-    # Process CSV file to shared path
     try {
+        $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
+        $connection.Open()
+        
+        # Truncate if requested
+        if ($Truncate) {
+            $truncateCmd = New-Object System.Data.SqlClient.SqlCommand("TRUNCATE TABLE $Table", $connection)
+            $truncateCmd.ExecuteNonQuery() | Out-Null
+            Write-Host "Table truncated."
+        }
+        
+        # Get column info
+        $columnsCmd = New-Object System.Data.SqlClient.SqlCommand(
+            "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '$Table' ORDER BY ORDINAL_POSITION", 
+            $connection
+        )
+        $columnsAdapter = New-Object System.Data.SqlClient.SqlDataAdapter($columnsCmd)
+        $columnsTable = New-Object System.Data.DataTable
+        $columnsAdapter.Fill($columnsTable) | Out-Null
+        $columnCount = $columnsTable.Rows.Count
+        
+        Write-Host "Found $columnCount columns in table $Table."
+        
+        # Process CSV file to shared path
         Write-Host "Using delimiter: '$Delimiter' for CSV processing"
-        $processedCsvPath = Process-CsvToSharedPath -CsvFile $CsvFile `
-                                            -SharedPath $SharedPath `
-                                            -Credentials $Credentials `
-                                            -SkipHeaderRow:$SkipHeaderRow `
-                                            -HandleTrailingDelimiters:$HandleTrailingDelimiters `
-                                            -Delimiter $Delimiter `
-                                            -ColumnCount $columnCount
+            $ProcessCsvParams = @{
+                CsvFile =$CsvFile
+                SharedPath = $SharedPath 
+                SkipHeaderRow =$SkipHeaderRow 
+                HandleTrailingDelimiters = $HandleTrailingDelimiters 
+                Delimiter = $Delimiter
+                ColumnCount = $columnCount
+            }
+            $processedCsvPath = Process_CsvToSharedPath @ProcessCsvParams
         
         if (-not $processedCsvPath) {
             throw "Failed to process CSV file to shared path."
         }
         
         # Create format file
-        $formatInfo = Create-BcpFormatFile -SharedPath $SharedPath `
-                                          -Credentials $Credentials `
-                                          -ColumnCount $columnCount `
-                                          -ColumnsTable $columnsTable `
-                                          -Delimiter $Delimiter
+        $formatFileParams = @{
+            SharedPath = $SharedPath 
+            ColumnCount = $columnCount 
+            ColumnsTable = $columnsTable 
+            Delimiter = $Delimiter
+        }
+        $formatFilePath = Create_BcpFormatFile @formatFileParams
         
-        if (-not $formatInfo) {
+        if (-not $formatFilePath) {
             throw "Failed to create BCP format file."
         }
         
-        # Build BULK INSERT command with options for handling empty fields
+        # Build BULK INSERT command
         $bulkInsertSql = @"
 BULK INSERT $Table
 FROM '$processedCsvPath'
 WITH (
-    FORMATFILE = '$formatInfo',
+    FORMATFILE = '$formatFilePath',
     FIRSTROW = 1,
     TABLOCK,
     MAXERRORS = 0,
-    KEEPNULLS,
-    CODEPAGE = '65001'  -- UTF-8 encoding
+    KEEPNULLS
 )
 "@
         
@@ -1002,6 +569,9 @@ WITH (
         
         $bulkCmd.ExecuteNonQuery() | Out-Null
         Write-Host "BULK INSERT completed successfully."
+        
+        # Return success
+        return $true
     }
     catch {
         Write-Host "Error during operation: $($_.Exception.Message)" -ForegroundColor Red
@@ -1011,35 +581,13 @@ WITH (
         throw
     }
     finally {
-        # Clean up
-        try {
-            # Attempt to remove temporary files - format files and CSV files
-            # This might not work for network paths depending on permissions
-            if ($isNetworkPath -and $isLinux) {
-                # Would need another smbclient call to delete...
-                Write-Host "Note: Temporary files on remote Samba shares were not automatically removed."
-            } else {
-                # For Windows paths or local paths, try to clean up
-                if ($processedCsvPath -and ($processedCsvPath -ne $CsvFile) -and (Test-Path $processedCsvPath)) {
-                    Remove-Item $processedCsvPath -Force
-                    Write-Host "Removed temporary CSV file."
-                }
-                
-                if ($formatInfo -and (Test-Path $formatInfo)) {
-                    Remove-Item $formatInfo -Force
-                    Write-Host "Removed format file."
-                }
-            }
-        } catch {
-            Write-Host "Warning: Could not clean up temporary files: $_" -ForegroundColor Yellow
-        }
-        
         # Close connection
         if ($connection -and $connection.State -ne 'Closed') {
             $connection.Close()
             Write-Host "Database connection closed."
         }
     }
+
     
     Write-Host "Import operation completed."
     <#
