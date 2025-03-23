@@ -476,7 +476,10 @@ function Import-BulkInsert {
         [switch]$HandleTrailingDelimiters,
         
         [Parameter(Mandatory=$false)]
-        [int]$CommandTimeout = 600
+        [int]$CommandTimeout = 600,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$ShowProgress
     )
     
     # Determine if this is a cross-platform scenario
@@ -530,6 +533,9 @@ function Import-BulkInsert {
                 HandleTrailingDelimiters = $HandleTrailingDelimiters 
                 Delimiter = $Delimiter
                 ColumnCount = $columnCount
+            }
+            if ($ShowProgress) {
+                $ProcessCsvParams["ShowProgress"] = $true
             }
             $processedCsvPath = Process_CsvToSharedPath @ProcessCsvParams
         

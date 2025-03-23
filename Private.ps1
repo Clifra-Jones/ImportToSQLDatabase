@@ -111,7 +111,10 @@ function Process_CsvToSharedPath {
         [string]$Delimiter = ",",
         
         [Parameter(Mandatory = $false)]
-        [int]$ColumnCount = 0
+        [int]$ColumnCount = 0,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$ShowProgress
     )
     
     Write-Host "Processing CSV file: $CsvFile"
@@ -120,6 +123,8 @@ function Process_CsvToSharedPath {
     # Determine if we need to preprocess the file
     $tempCsvFile = $CsvFile
     if ($SkipHeaderRow -or $HandleTrailingDelimiters) {
+        $Lines = (Get-Content -path $CsvFile | Measure-Object -line).lines
+
         $tempFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".csv"
         $tempCsvFile = [System.IO.Path]::Combine($SharedPath, $tempFileName)
         
@@ -130,11 +135,25 @@ function Process_CsvToSharedPath {
         if ($SkipHeaderRow) {
             [void]$reader.ReadLine()
             Write-Host "Skipping header row."
+            $Lines--
         }
         
         # Process and write remaining content
         $lineNum = 0
         while ($null -ne ($line = $reader.ReadLine())) {
+
+            # Later we are determining which progress indicator to use
+            # the text based progress indicator is only available if you
+            # have the MOA_MOdule available. we will check for that now.
+            If ($ShowProgress -and $env:ShowProgress -eq 'text') {
+                If (Get-Module -ListAvailable -name Moa_Module) {
+                    Import-Module MOA_Module
+                } else {
+                    Write-Host "Moa_Module not available, reverting to standard progress indicator."
+                    $env:ShowProgress = 'ps'
+                }
+            }
+            
             $lineNum++
             
             if ($HandleTrailingDelimiters -and $ColumnCount -gt 0) {
@@ -194,10 +213,38 @@ function Process_CsvToSharedPath {
             }
             
             $writer.WriteLine($line)
-            
-            # Show progress every 10,000 lines
-            if ($lineNum % 10000 -eq 0) {
-                Write-Host "Processed $lineNum lines..."
+
+            # Determine is we are going to show any progress indicator.
+            # If -ShowProgress is provided We use an environment variables to
+            # determine which progress indicator to use.
+            # Either the test based progress indicator from my MOA_Module or the Powershell built in one.
+            # Variables:
+            # $env:ShowProgress
+            #   Values:
+            #   'text' : Use the text based progress bar available in my MOA_Module
+            #   'ps' : User Powershell's built in progress indicator
+            #
+            # The text base progress bor can be customized by setting certain parameters.
+            # That is not available here. You can still set customization by setting the 
+            # PSDefaultParameterValues variable.
+            # The following will set the customizations for the current Powershell Session (or until you remove them)
+            # to Foreground = Green, BarForeground = Blue, BarBackground = Red
+            # $PSDefaultParameterValues["Show-Progress:Foreground"] ="Green"
+            # $PSDefaultParameterValues["Show-Progress:BarForeground"] = "Blue"
+            # $PSDefaultParameterValues["Show-Progress:BarBackground"] = "Red"
+            #
+
+            if ($ShowProgress) {
+                If ($env:ShowProgress -eq 'text') {                    
+                    Show-Progress -Activity "Processing file ..." -Status "Line: $lineNum of $Lines"
+                } elseif ($env:ShowProgress -eq 'ps') {
+                    Write-Progress -Activity "Processing file..." -Status "Line: $lineNum of $Lines"
+                } else {
+                    # Show progress every 10,000 lines
+                    if ($lineNum % 10000 -eq 0) {
+                        Write-Host "Processed $lineNum lines..."
+                    }
+                }
             }
         }
         
