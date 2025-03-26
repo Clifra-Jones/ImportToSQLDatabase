@@ -526,18 +526,18 @@ function Import-BulkInsert {
         
         # Process CSV file to shared path
         Write-Host "Using delimiter: '$Delimiter' for CSV processing"
-            $ProcessCsvParams = @{
-                CsvFile =$CsvFile
-                SharedPath = $SharedPath 
-                SkipHeaderRow =$SkipHeaderRow 
-                HandleTrailingDelimiters = $HandleTrailingDelimiters 
-                Delimiter = $Delimiter
-                ColumnCount = $columnCount
-            }
-            if ($ShowProgress) {
-                $ProcessCsvParams["ShowProgress"] = $true
-            }
-            $processedCsvPath = Process_CsvToSharedPath @ProcessCsvParams
+        $ProcessCsvParams = @{
+            CsvFile =$CsvFile
+            SharedPath = $SharedPath 
+            SkipHeaderRow =$SkipHeaderRow 
+            HandleTrailingDelimiters = $HandleTrailingDelimiters 
+            Delimiter = $Delimiter
+            ColumnCount = $columnCount
+        }
+        if ($ShowProgress) {
+            $ProcessCsvParams["ShowProgress"] = $true
+        }
+        $processedCsvPath = Process_CsvToSharedPath @ProcessCsvParams
         
         if (-not $processedCsvPath) {
             throw "Failed to process CSV file to shared path."
