@@ -86,7 +86,7 @@ function Create_BcpFormatFile {
 
     # Write format file
     [System.IO.File]::WriteAllText($formatFile, $formatContent)
-    Write-Host "Created format file: $formatFile"
+    Write-Verbose "Created format file: $formatFile"
     
     # Return the format file path
     return $formatFile
@@ -117,8 +117,8 @@ function Process_CsvToSharedPath {
         [switch]$ShowProgress
     )
     
-    Write-Host "Processing CSV file: $CsvFile"
-    Write-Host "Target Windows share: $SharedPath"
+    Write-Verbose "Processing CSV file: $CsvFile"
+    Write-Verbose "Target Windows share: $SharedPath"
 
     $tempCsvFile = $CsvFile
 
@@ -279,7 +279,7 @@ function Process_CsvToSharedPath {
         # If no processing was needed, copy the file to the shared path
         $destFile = [System.IO.Path]::Combine($SharedPath, [System.IO.Path]::GetFileName($CsvFile))
         Copy-Item -Path $CsvFile -Destination $destFile -Force
-        Write-Host "Copied file to shared path: $destFile"
+        Write-Verbose "Copied file to shared path: $destFile"
         return $destFile
     }
 }
