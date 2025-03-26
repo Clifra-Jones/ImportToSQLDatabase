@@ -501,7 +501,7 @@ function Import-BulkInsert {
         $connectionString = "Server=$SqlServer;Database=$Database;Integrated Security=True;"
     }
     
-    #try {
+    try {
         $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
         $connection.Open()
         
@@ -579,18 +579,27 @@ WITH (
         # Return success
         return $true
     #}
- #   catch {
+    catch {
         Write-Host "Error during operation: $($_.Exception.Message)" -ForegroundColor Red
         if ($_.Exception.InnerException) {
             Write-Host "Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
         }
-        throw
-  #  }
+        return [PSCustomObject]@{
+            Success = $false
+            Exception = $_.Exception
+        }
+    }
     finally {
         # Close connection
         if ($connection -and $connection.State -ne 'Closed') {
             $connection.Close()
             Write-Host "Database connection closed."
+        }
+        #removing temporary files
+        Remove-Item -Path $processedCsvPath
+        Remove-Item -Path $formatFilePath
+        return [PSCustomObject]@{
+            Success = $true
         }
     }
 
