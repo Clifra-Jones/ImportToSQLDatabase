@@ -127,7 +127,7 @@ function Process_CsvToSharedPath {
         $tempCsvFile = [System.IO.Path]::Combine($SharedPath, $tempFileName)
 
         $objCsvFile = Import-Csv -Path $CsvFile -Delimiter $Delimiter
-        $objCsvFile | ConvertTo-Csv -UseQuotes AsNeeded | Select-Object -Skip 1 | Out-File $tempCsvFile
+        $objCsvFile | ConvertTo-Csv -Delimiter $Delimiter -UseQuotes AsNeeded | Select-Object -Skip 1 | Out-File $tempCsvFile
 
         return $tempCsvFile        
     
