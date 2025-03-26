@@ -119,9 +119,21 @@ function Process_CsvToSharedPath {
     
     Write-Host "Processing CSV file: $CsvFile"
     Write-Host "Target Windows share: $SharedPath"
+
+    $tempCsvFile = $CsvFile
+
+    if ($SkipHeaderRow){
+        $tempFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".csv"
+        $tempCsvFile = [System.IO.Path]::Combine($SharedPath, $tempFileName)
+
+        $objCsvFile = Import-Csv -Path $CsvFile -Delimiter $Delimiter
+        $objCsvFile | ConvertTo-Csv -UseQuotes AsNeeded | Select-Object -Skip 1 | Out-File $tempCsvFile
+
+        return $tempCsvFile        
+    
     
     # Determine if we need to preprocess the file
-    $tempCsvFile = $CsvFile
+    <#     $tempCsvFile = $CsvFile
     if ($SkipHeaderRow -or $HandleTrailingDelimiters) {
         $Lines = (Get-Content -path $CsvFile | Measure-Object -line).lines
 
@@ -262,8 +274,8 @@ function Process_CsvToSharedPath {
         
         # Return the path to the processed file
         return $tempCsvFile
-    }
-    else {
+    #>    
+    } else {
         # If no processing was needed, copy the file to the shared path
         $destFile = [System.IO.Path]::Combine($SharedPath, [System.IO.Path]::GetFileName($CsvFile))
         Copy-Item -Path $CsvFile -Destination $destFile -Force
