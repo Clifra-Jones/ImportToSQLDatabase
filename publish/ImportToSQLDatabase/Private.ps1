@@ -86,7 +86,7 @@ function Create_BcpFormatFile {
 
     # Write format file
     [System.IO.File]::WriteAllText($formatFile, $formatContent)
-    Write-Host "Created format file: $formatFile"
+    Write-Verbose "Created format file: $formatFile"
     
     # Return the format file path
     return $formatFile
@@ -117,11 +117,23 @@ function Process_CsvToSharedPath {
         [switch]$ShowProgress
     )
     
-    Write-Host "Processing CSV file: $CsvFile"
-    Write-Host "Target Windows share: $SharedPath"
+    Write-Verbose "Processing CSV file: $CsvFile"
+    Write-Verbose "Target Windows share: $SharedPath"
+
+    $tempCsvFile = $CsvFile
+
+    if ($SkipHeaderRow){
+        $tempFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".csv"
+        $tempCsvFile = [System.IO.Path]::Combine($SharedPath, $tempFileName)
+
+        $objCsvFile = Import-Csv -Path $CsvFile -Delimiter $Delimiter
+        $objCsvFile | ConvertTo-Csv -Delimiter $Delimiter -UseQuotes AsNeeded | Select-Object -Skip 1 | Out-File $tempCsvFile
+
+        return $tempCsvFile        
+    
     
     # Determine if we need to preprocess the file
-    $tempCsvFile = $CsvFile
+    <#     $tempCsvFile = $CsvFile
     if ($SkipHeaderRow -or $HandleTrailingDelimiters) {
         $Lines = (Get-Content -path $CsvFile | Measure-Object -line).lines
 
@@ -262,12 +274,12 @@ function Process_CsvToSharedPath {
         
         # Return the path to the processed file
         return $tempCsvFile
-    }
-    else {
+    #>    
+    } else {
         # If no processing was needed, copy the file to the shared path
         $destFile = [System.IO.Path]::Combine($SharedPath, [System.IO.Path]::GetFileName($CsvFile))
         Copy-Item -Path $CsvFile -Destination $destFile -Force
-        Write-Host "Copied file to shared path: $destFile"
+        Write-Verbose "Copied file to shared path: $destFile"
         return $destFile
     }
 }
