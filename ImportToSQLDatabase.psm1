@@ -575,24 +575,6 @@ WITH (
         
         $bulkCmd.ExecuteNonQuery() | Out-Null
         Write-Verbose "BULK INSERT completed successfully."
-        
-        # Return success
-        $result = @{
-            Success = $true
-        }
-    }
-    catch {
-        Write-verbose "Error during operation: $($_.Exception.Message)" -ForegroundColor Red
-        if ($_.Exception.InnerException) {
-            Write-Verbose "Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
-        }
-        $result = @{
-            Success = $false
-            Exception = $_.Exception
-        }
-    }
-    finally {
-        # Close connection
         if ($connection -and $connection.State -ne 'Closed') {
             $connection.Close()
             Write-Verbose "Database connection closed."
@@ -600,6 +582,13 @@ WITH (
         #removing temporary files
         Remove-Item -Path $processedCsvPath
         Remove-Item -Path $formatFilePath
+        
+        # Return success
+        $result = $true
+    }
+    catch {
+        Write-verbose "Error during operation: $($_.Exception.Message)" -ForegroundColor Red
+        throw $_.Exception.Message
     }
     
     Write-Verbose "Import operation completed."
