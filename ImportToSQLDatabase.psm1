@@ -577,10 +577,12 @@ WITH (
         Write-Verbose "BULK INSERT completed successfully."
         
         # Return success
-        return $true
+        $result = @{
+            Success = $true
+        }
     }
     catch {
-        Write-Host "Error during operation: $($_.Exception.Message)" -ForegroundColor Red
+        Write-verbose "Error during operation: $($_.Exception.Message)" -ForegroundColor Red
         if ($_.Exception.InnerException) {
             Write-Verbose "Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
         }
@@ -593,7 +595,7 @@ WITH (
         # Close connection
         if ($connection -and $connection.State -ne 'Closed') {
             $connection.Close()
-            Write-Host "Database connection closed."
+            Write-Verbose "Database connection closed."
         }
         #removing temporary files
         Remove-Item -Path $processedCsvPath
