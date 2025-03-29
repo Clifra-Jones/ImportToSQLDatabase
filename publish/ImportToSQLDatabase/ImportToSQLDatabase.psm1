@@ -489,7 +489,7 @@ function Import-BulkInsert {
     if (-not $SharedPath) {
         # Try to use the same directory as the input file
         $SharedPath = [System.IO.Path]::GetDirectoryName($CsvFile)
-        Write-Host "Using shared path: $SharedPath"
+        Write-verbose "Using shared path: $SharedPath"
     }
     
     # Build connection string
@@ -501,7 +501,7 @@ function Import-BulkInsert {
         $connectionString = "Server=$SqlServer;Database=$Database;Integrated Security=True;"
     }
     
-    #try {
+    try {
         $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
         $connection.Open()
         
@@ -509,7 +509,7 @@ function Import-BulkInsert {
         if ($Truncate) {
             $truncateCmd = New-Object System.Data.SqlClient.SqlCommand("TRUNCATE TABLE $Table", $connection)
             $truncateCmd.ExecuteNonQuery() | Out-Null
-            Write-Host "Table truncated."
+            Write-verbose "Table truncated."
         }
         
         # Get column info
@@ -522,22 +522,22 @@ function Import-BulkInsert {
         $columnsAdapter.Fill($columnsTable) | Out-Null
         $columnCount = $columnsTable.Rows.Count
         
-        Write-Host "Found $columnCount columns in table $Table."
+        Write-verbose "Found $columnCount columns in table $Table."
         
         # Process CSV file to shared path
-        Write-Host "Using delimiter: '$Delimiter' for CSV processing"
-            $ProcessCsvParams = @{
-                CsvFile =$CsvFile
-                SharedPath = $SharedPath 
-                SkipHeaderRow =$SkipHeaderRow 
-                HandleTrailingDelimiters = $HandleTrailingDelimiters 
-                Delimiter = $Delimiter
-                ColumnCount = $columnCount
-            }
-            if ($ShowProgress) {
-                $ProcessCsvParams["ShowProgress"] = $true
-            }
-            $processedCsvPath = Process_CsvToSharedPath @ProcessCsvParams
+        Write-Verbose "Using delimiter: '$Delimiter' for CSV processing"
+        $ProcessCsvParams = @{
+            CsvFile =$CsvFile
+            SharedPath = $SharedPath 
+            SkipHeaderRow =$SkipHeaderRow 
+            HandleTrailingDelimiters = $HandleTrailingDelimiters 
+            Delimiter = $Delimiter
+            ColumnCount = $columnCount
+        }
+        if ($ShowProgress) {
+            $ProcessCsvParams["ShowProgress"] = $true
+        }
+        $processedCsvPath = Process_CsvToSharedPath @ProcessCsvParams
         
         if (-not $processedCsvPath) {
             throw "Failed to process CSV file to shared path."
@@ -569,28 +569,37 @@ WITH (
 )
 "@
         
-        Write-Host "Executing SQL Command: $bulkInsertSql"
+        Write-Verbose "Executing SQL Command: $bulkInsertSql"
         $bulkCmd = New-Object System.Data.SqlClient.SqlCommand($bulkInsertSql, $connection)
         $bulkCmd.CommandTimeout = $CommandTimeout
         
         $bulkCmd.ExecuteNonQuery() | Out-Null
-        Write-Host "BULK INSERT completed successfully."
+        Write-Verbose "BULK INSERT completed successfully."
         
         # Return success
         return $true
-    #}
- #   catch {
+    }
+    catch {
         Write-Host "Error during operation: $($_.Exception.Message)" -ForegroundColor Red
         if ($_.Exception.InnerException) {
-            Write-Host "Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+            Write-Verbose "Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
         }
-        throw
-  #  }
+        $result = @{
+            Success = $false
+            Exception = $_.Exception
+        }
+    }
     finally {
         # Close connection
         if ($connection -and $connection.State -ne 'Closed') {
             $connection.Close()
             Write-Host "Database connection closed."
+        }
+        #removing temporary files
+        Remove-Item -Path $processedCsvPath
+        Remove-Item -Path $formatFilePath
+        if ($result["Success"] = $false) {
+            throw $result["Exception"].InnerException
         }
     }
 
