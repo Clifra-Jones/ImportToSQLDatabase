@@ -600,13 +600,10 @@ WITH (
         #removing temporary files
         Remove-Item -Path $processedCsvPath
         Remove-Item -Path $formatFilePath
-        if ($result["Success"] = $false) {
-            throw $result["Exception"].InnerException
-        }
     }
-
     
-    Write-Host "Import operation completed."
+    Write-Verbose "Import operation completed."
+    return $result
     <#
     .SYNOPSIS
     Imports data from a delimited file into a SQL Server table using BULK INSERT.

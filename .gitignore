@@ -2,3 +2,5 @@
 .tmp/
 publish/
 Data/
+publish/ImportToSQLDatabase/ImportToSQLDatabase.psd1
+publish/ImportToSQLDatabase/ImportToSQLDatabase.psm1
