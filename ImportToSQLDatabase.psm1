@@ -587,8 +587,8 @@ WITH (
         $result = $true
     }
     catch {
-        Write-verbose "Error during operation: $($_.Exception.Message)" -ForegroundColor Red
-        throw $_.Exception.Message
+        Write-verbose "Error during operation: $($_.Exception.Message)" 
+        #throw $_.Exception.Message
     }
     
     Write-Verbose "Import operation completed."

@@ -129,6 +129,8 @@ function Process_CsvToSharedPath {
         $objCsvFile = Import-Csv -Path $CsvFile -Delimiter $Delimiter
         $objCsvFile | ConvertTo-Csv -Delimiter $Delimiter -UseQuotes AsNeeded | Select-Object -Skip 1 | Out-File $tempCsvFile
 
+        Write-Verbose "Copies $tempCsvFile to $SharedPath"
+
         return $tempCsvFile        
     
     
