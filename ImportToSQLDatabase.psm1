@@ -456,6 +456,9 @@ function Import-BulkInsert {
         
         [Parameter(Mandatory=$false)]
         [string]$Delimiter = "|",
+
+        [Parameter(Mandatory=$false)]
+        [string]$FieldQuote,
         
         [Parameter(Mandatory=$false)]
         [switch]$SkipHeaderRow,
@@ -566,8 +569,15 @@ WITH (
     TABLOCK,
     MAXERRORS = 0,
     KEEPNULLS
+    {0}
 )
 "@
+        if ($FieldQuote) {
+            $FQ = ",FIELDQUOTE = '{0}'" -f '"'
+            $bulkInsertSql = $bulkInsertSql -f $FQ
+        } else {
+            $bulkInsertSql = $bulkInsertSql -f $null
+        }
         
         Write-Verbose "Executing SQL Command: $bulkInsertSql"
         $bulkCmd = New-Object System.Data.SqlClient.SqlCommand($bulkInsertSql, $connection)
