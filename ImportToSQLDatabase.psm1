@@ -477,6 +477,9 @@ function Import-BulkInsert {
         
         [Parameter(Mandatory=$false)]
         [switch]$HandleTrailingDelimiters,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$HandleQuotedFields,
         
         [Parameter(Mandatory=$false)]
         [int]$CommandTimeout = 600,
@@ -554,6 +557,10 @@ function Import-BulkInsert {
             Delimiter = $Delimiter
         }
         $formatFilePath = Create_BcpFormatFile @formatFileParams
+
+        if ($HandleQuotedFields) {
+            $formatFileParams["HandleQuotedFields"] = $true
+        }
         
         if (-not $formatFilePath) {
             throw "Failed to create BCP format file."

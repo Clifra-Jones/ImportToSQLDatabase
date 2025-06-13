@@ -26,36 +26,121 @@ function Create_BcpFormatFile {
     $formatFile = [System.IO.Path]::Combine($SharedPath, $formatFileName)
     
     if ($HandleQuotedFields) {
-        # For quoted CSV files, use a simpler approach
-        # Create a non-XML format file that can handle quoted fields better
+        # Use non-XML format file for quoted CSV files
+        # Non-XML format files handle quoted fields much better
+        
         $formatContent = @()
-        $formatContent += "14.0"  # Version
-        $formatContent += $ColumnCount.ToString()  # Number of columns
+        $formatContent += "14.0"  # Version number
+        $formatContent += $ColumnCount.ToString()  # Number of fields
         
         for ($i = 0; $i -lt $ColumnCount; $i++) {
             $fieldNum = $i + 1
-            if ($i -eq 0) {
-                # First field might be quoted or not
-                $terminator = if ($i -eq $ColumnCount - 1) { '"\r\n"' } else { '","' }
-                $formatContent += "$fieldNum SQLCHAR 0 8000 `"$terminator`" $fieldNum $($ColumnsTable.Rows[$i]['COLUMN_NAME']) `"`""
-            } elseif ($i -eq $ColumnCount - 1) {
-                # Last field
-                $formatContent += "$fieldNum SQLCHAR 0 8000 `"\r\n`" $fieldNum $($ColumnsTable.Rows[$i]['COLUMN_NAME']) `"`""
-            } else {
-                # Middle fields
-                $formatContent += "$fieldNum SQLCHAR 0 8000 `"$Delimiter`" $fieldNum $($ColumnsTable.Rows[$i]['COLUMN_NAME']) `"`""
+            $columnName = $ColumnsTable.Rows[$i]["COLUMN_NAME"]
+            $dataType = $ColumnsTable.Rows[$i]["DATA_TYPE"].ToString().ToUpper()
+            
+            # Determine SQL data type
+            $sqlType = switch ($dataType) {
+                "INT" { "SQLINT" }
+                "BIGINT" { "SQLBIGINT" }
+                "SMALLINT" { "SQLSMALLINT" }
+                "TINYINT" { "SQLTINYINT" }
+                "BIT" { "SQLBIT" }
+                "DECIMAL" { "SQLDECIMAL" }
+                "NUMERIC" { "SQLNUMERIC" }
+                "MONEY" { "SQLMONEY" }
+                "SMALLMONEY" { "SQLSMALLMONEY" }
+                "FLOAT" { "SQLFLT8" }
+                "REAL" { "SQLFLT4" }
+                "DATETIME" { "SQLDATETIME" }
+                "DATETIME2" { "SQLDATETIME" }
+                "DATE" { "SQLDATE" }
+                "TIME" { "SQLTIME" }
+                "DATETIMEOFFSET" { "SQLDATETIMEOFFSET" }
+                "SMALLDATETIME" { "SQLSMALLDATETIME" }
+                default { "SQLCHAR" }  # Use SQLCHAR for text fields
             }
+            
+            # Set terminators for quoted CSV
+            if ($i -eq $ColumnCount - 1) {
+                # Last field terminates with newline
+                $terminator = '"\r\n"'
+            } else {
+                # Other fields terminate with delimiter
+                $terminator = "`"$Delimiter`""
+            }
+            
+            # Format: FieldOrder DataType PrefixLength FieldLength Terminator OutputColumn ColumnName Collation
+            # For quoted fields, we use " as the field quote character
+            $formatContent += "$fieldNum $sqlType 0 0 $terminator $fieldNum $columnName `"`""
         }
         
         $formatContent | Out-File -FilePath $formatFile -Encoding ASCII
+        Write-Verbose "Created non-XML format file for quoted CSV: $formatFile"
+        
     } else {
-        # Original XML format code here...
-        # (keep your existing XML format code as fallback)
+        # Original XML format for non-quoted files
+        $formatContent = @'
+<?xml version="1.0"?>
+<BCPFORMAT xmlns="http://schemas.microsoft.com/sqlserver/2004/bulkload/format" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+ <RECORD>
+'@
+
+        # Add field definitions
+        for ($i = 0; $i -lt $ColumnCount; $i++) {
+            $terminator = if ($i -eq $ColumnCount - 1) { "\r\n" } else { $Delimiter }
+            $formatContent += "  <FIELD ID=`"$($i+1)`" xsi:type=`"CharTerm`" TERMINATOR=`"$terminator`" MAX_LENGTH=`"8000`"/>"
+        }
+
+        # Add row section
+        $formatContent += @'
+
+ </RECORD>
+ <ROW>
+'@
+
+        # Add column mappings
+        for ($i = 0; $i -lt $ColumnCount; $i++) {
+            $columnName = $ColumnsTable.Rows[$i]["COLUMN_NAME"]
+            $dataType = $ColumnsTable.Rows[$i]["DATA_TYPE"].ToString().ToUpper()
+            
+            $xsiType = switch ($dataType) {
+                "INT" { "SQLINT" }
+                "BIGINT" { "SQLBIGINT" }
+                "SMALLINT" { "SQLSMALLINT" }
+                "TINYINT" { "SQLTINYINT" }
+                "BIT" { "SQLBIT" }
+                "DECIMAL" { "SQLDECIMAL" }
+                "NUMERIC" { "SQLNUMERIC" }
+                "MONEY" { "SQLMONEY" }
+                "SMALLMONEY" { "SQLSMALLMONEY" }
+                "FLOAT" { "SQLFLT8" }
+                "REAL" { "SQLFLT4" }
+                "DATETIME" { "SQLDATETIME" }
+                "DATETIME2" { "SQLDATETIME" }
+                "DATE" { "SQLDATE" }
+                "TIME" { "SQLTIME" }
+                "DATETIMEOFFSET" { "SQLDATETIMEOFFSET" }
+                "SMALLDATETIME" { "SQLSMALLDDATETIME" }
+                default { "SQLVARYCHAR" }
+            }
+            
+            $formatContent += "  <COLUMN SOURCE=`"$($i+1)`" NAME=`"$columnName`" xsi:type=`"$xsiType`"/>"
+        }
+
+        # Close XML
+        $formatContent += @'
+
+ </ROW>
+</BCPFORMAT>
+'@
+
+        [System.IO.File]::WriteAllText($formatFile, $formatContent)
+        Write-Verbose "Created XML format file: $formatFile"
     }
     
-    Write-Verbose "Created format file: $formatFile"
     return $formatFile
 }
+
 function Process_CsvToSharedPath {
     [CmdletBinding()]
     param (
