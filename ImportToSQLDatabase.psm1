@@ -477,9 +477,6 @@ function Import-BulkInsert {
         
         [Parameter(Mandatory=$false)]
         [switch]$HandleTrailingDelimiters,
-
-        [Parameter(Mandatory=$false)]
-        [switch]$HandleQuotedFields,
         
         [Parameter(Mandatory=$false)]
         [int]$CommandTimeout = 600,
@@ -576,15 +573,8 @@ WITH (
     TABLOCK,
     MAXERRORS = 0,
     KEEPNULLS
-    {0}
 )
 "@
-        if ($FieldQuote) {
-            $FQ = ",FIELDQUOTE = '{0}'" -f '"'
-            $bulkInsertSql = $bulkInsertSql -f $FQ
-        } else {
-            $bulkInsertSql = $bulkInsertSql -f $null
-        }
         
         Write-Verbose "Executing SQL Command: $bulkInsertSql"
         $bulkCmd = New-Object System.Data.SqlClient.SqlCommand($bulkInsertSql, $connection)
