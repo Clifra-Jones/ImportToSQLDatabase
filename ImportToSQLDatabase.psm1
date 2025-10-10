@@ -227,7 +227,7 @@ function Import-ToSqlDatabase {
             $connection
         )
         
-        $tableColumns = @{}
+        $tableColumns = [ordered]@{}
         $reader = $schemaCommand.ExecuteReader()
         while ($reader.Read()) {
             $columnName = $reader["COLUMN_NAME"]
@@ -249,6 +249,7 @@ function Import-ToSqlDatabase {
             $csvData = Import-Csv -Path $CsvFile -Delimiter $Delimiter -Header $Headers | Select-Object -Skip 1 
         } else {
             # Import all the data normally specifying headers (there is no header row)
+            [array]$Headers = $tableColumns.Keys
             $csvData = Import-Csv -Path $CsvFile -Delimiter $Delimiter -Header $Headers
         }
 
