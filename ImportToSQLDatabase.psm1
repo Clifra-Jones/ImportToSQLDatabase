@@ -456,6 +456,10 @@ function Import-ToSqlDatabase {
     The function supports importing CSV, pipe-delimited, and tab-delimited files. The function can handle quoted fields and 
     supports various options for managing the import process, including truncating the table before import, managing indexes 
     and constraints, and enabling high-performance mode for large imports.
+    If the input file columns are not in the same ordinal order as the data table, it must have column headers that match the table columns
+    exactly and you must use the -FirstRowColumns parameter.
+    If you do not specify -FirstRowColumns or -SkipHeaderRow the input file MUST NOT have a header row and the columns must be in the ordinal
+    order of the data table.
     .PARAMETER CsvFile
     The path to the delimited file to import.
     .PARAMETER SqlServer
