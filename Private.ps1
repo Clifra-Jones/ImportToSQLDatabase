@@ -1,4 +1,17 @@
+function Write-Log {
+    Param(
+        [string]$Message,
+        [string]$LogPath,
+        [switch]$Tee
+    )
 
+    if ($LogPath) {
+        "$(Get-Date -format 'yyyy-MM-dd HH:mm:ss') $Message" |Out-File $LogPath -Append
+    } 
+    if ($Tee) {
+        Write-Host $message
+    }
+}
 
 function Create_BcpFormatFile {
     [CmdletBinding()]

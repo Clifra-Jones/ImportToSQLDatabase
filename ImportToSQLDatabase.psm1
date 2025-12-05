@@ -3,6 +3,7 @@ using namespace Microsoft.VisualBasic.FileIO
 
 . "$PSScriptRoot\Private.ps1"
 
+
 function Import-ToSqlDatabase {
     [CmdletBinding()]
     param(
@@ -61,13 +62,73 @@ function Import-ToSqlDatabase {
         [switch]$ManageIndexes,
         
         [Parameter(Mandatory=$false)]
-        [switch]$ManageConstraints
+        [switch]$ManageConstraints,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$Silent,
+
+        [Parameter(Mandatory = $false)]
+        [string]$LogPath
     )
 
     Begin {
+
+        function Out-Redirect {
+            Param(
+                [Parameter(
+                    Mandatory = $true,
+                    ValueFromPipeline,
+                    Position = 0
+                )]
+                [string]$Message,
+
+                [Parameter (Mandatory = $false)]
+                [ValidateSet('Host','File','Null')]
+                [String]$Target = 'Host',
+
+                [Parameter(Mandatory = $false)]
+                [string]$Path
+            )
+
+            # Validate the Path variable. Only valid when Target = File
+            If ($Target -eq 'File' -and $null -eq $Path) {
+                Throw "Parameter Path must be specified when Parameter Target = 'File'."
+            }
+            if ($Path) {
+                if (-not $Target) {
+                    Throw "Parameter Target must be set to 'File' if Parameter Path is specified."
+                }
+            }
+
+            switch ($Target) {
+                'Host' {
+                    $Message | Write-Host
+                }
+                'File' {
+                    $Message | Out-File -FilePath $Path -Append
+                }
+                'Null' {
+                    # do nothing
+                }
+            }
+        }
+
+        $RedirectParams = @{}
+
+        if ($Silent) {
+            $RedirectParams['Target'] = 'Null'
+        } elseIf ($LogPath) {
+            $RedirectParams['Target'] = 'File'
+            $RedirectParams['Path']= $LogPath
+        } else {
+            $RedirectParams['Target'] = 'Host'
+        }
+
         # Normalize the path to the CSV file 
         $CsvFile = (Resolve-Path $CsvFile).Path
         
+        # Steps for log entry progress
+        $Step = 10
 
         # Validate file exists
         if (-not (Test-Path $CsvFile)) {
@@ -115,7 +176,7 @@ function Import-ToSqlDatabase {
         try {
             $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
             $connection.Open()
-            Write-Host "Connection to SQL Server established successfully."
+            "Connection to SQL Server established successfully."| Out-Redirect @RedirectParams
         }
         catch {
             throw "Failed to connect to SQL Server: $_"
@@ -128,10 +189,10 @@ function Import-ToSqlDatabase {
                 [void](
                     $truncateCommand.ExecuteNonQuery()
                 )
-                Write-Host "Table truncated successfully."
+                "Table truncated successfully." | Out-Redirect @RedirectParams
             }
             catch {
-                Write-Host "Error truncating table: $_"
+                "Error truncating table: $_" | Out-Redirect @RedirectParams
                 throw
             }
         }
@@ -149,14 +210,14 @@ function Import-ToSqlDatabase {
             }
         }
         catch {
-            Write-Host "Error validating table existence: $_"
+            "Error validating table existence: $_" | Out-Redirect @RedirectParams
             throw
         }
 
         if ($ManageConstraints) {
             # Disable constraints
             try {
-                Write-Host "Disabling foreign key constraints on $Table..."
+                "Disabling foreign key constraints on $Table..." | Out-Redirect @RedirectParams
                 $disableConstraintsCommand = New-Object System.Data.SqlClient.SqlCommand(
                     "ALTER TABLE $Table NOCHECK CONSTRAINT ALL", 
                     $connection
@@ -164,17 +225,17 @@ function Import-ToSqlDatabase {
                 [void](
                     $disableConstraintsCommand.ExecuteNonQuery() 
                 )
-                Write-Host "Foreign key constraints disabled."
+                "Foreign key constraints disabled." | Out-Redirect @RedirectParams
             }
             catch {
-                Write-Host "Error disabling constraints: $_"
+                "Error disabling constraints: $_" | Out-Redirect @RedirectParams
                 # Consider whether to throw or continue
             }
         }
 
         If ($ManageIndexes) {
             try {
-                Write-Host "Disabling non-clustered indexes on $Table..."
+                "Disabling non-clustered indexes on $Table..." | Out-Redirect @RedirectParams
                 $disableIndexesCommand = New-Object System.Data.SqlClient.SqlCommand(
                     "ALTER INDEX ALL ON $Table DISABLE",
                     $connection
@@ -182,10 +243,10 @@ function Import-ToSqlDatabase {
                 [void](
                     $disableIndexesCommand.ExecuteNonQuery()
                 )
-                Write-Host "Non-clustered indexes disabled."
+                "Non-clustered indexes disabled." | Out-Redirect @RedirectParams
             }
             catch {
-                Write-Host "Error disabling indexes: $_"
+                "Error disabling indexes: $_" | Out-Redirect @RedirectParams
                 # Consider whether to throw or continue
             }
         }
@@ -227,29 +288,29 @@ function Import-ToSqlDatabase {
             $connection
         )
         
-        $tableColumns = @{}
+        $tableColumns = @()
         $reader = $schemaCommand.ExecuteReader()
         while ($reader.Read()) {
             $columnName = $reader["COLUMN_NAME"]
-            $tableColumns[$columnName] = $columnName
+            $tableColumns += $columnName
         }
         $reader.Close()
         
-        Write-Host "Detected $($tableColumns.Count) columns in SQL table."
+        "Detected $($tableColumns.Count) columns in SQL table." | Out-Redirect @RedirectParams
 
         #Now that we have the columns from the SQL Table we can map the table import.
-        Write-Host "Reading data from $CsvFile..."
+        "Reading data from $CsvFile..." | Out-Redirect @RedirectParams
         If ($FirstRowColumns) {
             # Import-the data normally including the column headers
             $csvData = Import-CsV -Path $CsvFile -Delimiter $Delimiter            
         } elseif($SkipHeaderRow) {
             # Import the data skipping the header row
             # we are going to use the sql table columns as the headers
-            [array]$Headers = $tableColumns.Keys
-            $csvData = Import-Csv -Path $CsvFile -Delimiter $Delimiter -Header $Headers | Select-Object -Skip 1 
+            # [array]$Headers = $tableColumns.Keys
+            $csvData = Import-Csv -Path $CsvFile -Delimiter $Delimiter -Header $tableColumns | Select-Object -Skip 1 
         } else {
             # Import all the data normally specifying headers (there is no header row)
-            $csvData = Import-Csv -Path $CsvFile -Delimiter $Delimiter -Header $Headers
+            $csvData = Import-Csv -Path $CsvFile -Delimiter $Delimiter -Header $tableColumns
         }
 
         # Create DataTable
@@ -257,15 +318,15 @@ function Import-ToSqlDatabase {
 
         $Columns = $CsvData[0].PSObject.Properties.Name
  
-        Write-Host "Mapping columns from CSV to SQL Table"
+        "Mapping columns from CSV to SQL Table" | Out-Redirect @RedirectParams
         for ($i = 0; $i -lt $Columns.Count; $i++) {
             if ($FirstRowColumns) {
                 if ($Columns[$i] -ne $tableColumns[$i]) {
                     Throw "Column $i in CSV file does not match table column $i"
                 }
             } 
-            [void]$dataTable.Columns.Add($Columns[$i])
-            [void]$bulkCopy.ColumnMappings.Add($i, $Columns[$i])
+            [void]$dataTable.Columns.Add($tableColumns[$i])
+            [void]$bulkCopy.ColumnMappings.Add($i, $tableColumns[$i])
         }
         
 
@@ -276,7 +337,7 @@ function Import-ToSqlDatabase {
         #     $lineNumber = 1
         # } 
         
-        Write-Host "Processing CSV Data..."
+        "Processing CSV Data..." | Out-Redirect @RedirectParams
         
         foreach ($CsvRow in $CsvData) {
             $row = $dataTable.NewRow()
@@ -286,14 +347,14 @@ function Import-ToSqlDatabase {
             $DataTable.Rows.Add($row)
             if ($BatchSize -gt 0) {
                 If ($dataTable.Rows.Count -ge $BatchSize) {
-                    Write-Host "Writing DataTable to SQL Server (batch of $($dataTable.Rows.Count) rows)..."
+                    "Writing DataTable to SQL Server (batch of $($dataTable.Rows.Count) rows)..." | Out-Redirect @RedirectParams
                     try {
-                        Write-Host "Writing $($dataTable.Rows.Count) rows to SQL Server..."
+                        "Writing $($dataTable.Rows.Count) rows to SQL Server..." | Out-Redirect @RedirectParams
                         [void]($bulkCopy.WriteToServer($dataTable))
                         [void]($dataTable.Clear())
                     }
                     catch {
-                        Write-Host "Error during bulk copy: $_"
+                        "Error during bulk copy: $_" | Out-Redirect @RedirectParams
                         throw
                     }
                 }
@@ -303,17 +364,26 @@ function Import-ToSqlDatabase {
                 $PercentComplete = [int](($rowsProcessed / $csvData.count) * 100)
                 Write-Progress -Activity "Processing CSV data" -Status "Processed $rowsProcessed rows" -PercentComplete $PercentComplete
             }
+            else {
+                $PercentComplete = [int](($rowsProcessed / $csvData.count) * 100)
+                if (($PercentComplete % $Step) -eq 0) {
+                    if ($PercentComplete -ne $PrevPercentComplete) {
+                        "$PercentComplete Completed" | Out-Redirect @RedirectParams
+                        $PrevPercentComplete = $PercentComplete
+                    }
+                }
+            }
         }
         # Either write the entire table ($BatchSize = 0) or the remaining rows
         if ($dataTable.Rows.Count -gt 0) {
-            Write-Host "Writing $($dataTable.Rows.Count) rows to SQL Server..."
+            "Writing $($dataTable.Rows.Count) rows to SQL Server..." | Out-Redirect @RedirectParams
             try {
                 [void](
                     $bulkCopy.WriteToServer($dataTable)
                 )
             }
             catch {
-                Write-Host "Error during final bulk copy: $_"
+                "Error during final bulk copy: $_" | Out-Redirect @RedirectParams
                 throw
             }
         
@@ -332,11 +402,11 @@ function Import-ToSqlDatabase {
         } else {
             0
         }
-        Write-Host "Import completed. Total rows processed: $rowsProcessed in $($totalTime.ToString('hh\:mm\:ss')). Average speed: $rowsPerSecond rows/sec"
+        "Import completed. Total rows processed: $rowsProcessed in $($totalTime.ToString('hh\:mm\:ss')). Average speed: $rowsPerSecond rows/sec" | Out-Redirect @RedirectParams
 
         if ($ManageIndexes) {
             try {
-                Write-Host "Re-enabling non-clustered indexes on $Table..."
+                "Re-enabling non-clustered indexes on $Table..." | Out-Redirect @RedirectParams
                 $enableIndexesCommand = New-Object System.Data.SqlClient.SqlCommand(
                     "ALTER INDEX ALL ON $Table REBUILD",
                     $connection
@@ -344,17 +414,17 @@ function Import-ToSqlDatabase {
                 [void](
                     $enableIndexesCommand.ExecuteNonQuery()
                 )
-                Write-Host "Non-clustered indexes re-enabled."
+                "Non-clustered indexes re-enabled." | Out-Redirect @RedirectParams
             }
             catch {
-                Write-Host "Error re-enabling indexes: $_"
+                "Error re-enabling indexes: $_" | Out-Redirect @RedirectParams
                 # Consider whether to throw or continue
             }
         }
 
         if ($ManageConstraints) {
             try {
-                Write-Host "Re-enabling foreign key constraints on $Table..."
+                "Re-enabling foreign key constraints on $Table..." | Out-Redirect @RedirectParams
                 $enableConstraintsCommand = New-Object System.Data.SqlClient.SqlCommand(
                     "ALTER TABLE $Table CHECK CONSTRAINT ALL",
                     $connection
@@ -362,10 +432,10 @@ function Import-ToSqlDatabase {
                 [void](
                     $enableConstraintsCommand.ExecuteNonQuery()
                 )
-                Write-Host "Foreign key constraints re-enabled."
+                "Foreign key constraints re-enabled." | Out-Redirect @RedirectParams
             }
             catch {
-                Write-Host "Error re-enabling constraints: $_"
+                "Error re-enabling constraints: $_" | Out-Redirect @RedirectParams
                 # Consider whether to throw or continue
             }
         }
@@ -376,7 +446,7 @@ function Import-ToSqlDatabase {
             Write-Progress -Activity "Importing CSV data" -Completed
         }
         
-        Write-Output "Successfully imported $rowsProcessed rows from $CsvFile to $Table in $($totalTime.ToString('hh\:mm\:ss')) ($rowsPerSecond rows/sec)"
+        "Successfully imported $rowsProcessed rows from $CsvFile to $Table in $($totalTime.ToString('hh\:mm\:ss')) ($rowsPerSecond rows/sec)" | Out-Redirect @RedirectParams
     }
     <#
     .SYNOPSIS
